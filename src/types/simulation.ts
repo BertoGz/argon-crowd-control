@@ -98,6 +98,15 @@ export interface CCTVFrameCapture {
   cameraLabel: string;
 }
 
+export interface CCTVVideoClip {
+  base64Data: string;     // Raw Base64 video bytes sent to @google/genai inlineData
+  mimeType: string;       // 'video/webm' or 'video/mp4'
+  objectUrl: string;      // Blob URL for <video> playback in UI
+  fps: number;            // Low-framerate security stream (4 FPS)
+  durationSimSec: number; // Simulated duration covered by clip
+  sizeKiB: number;        // Compressed payload size in KiB
+}
+
 export interface ArgonVisualCritique {
   iteration: number;
   timestamp: string;
@@ -116,6 +125,7 @@ export interface ArgonVisualCritique {
   interventionReasoning: string;
   proposedPlan: PhysicalInterventionPlan;
   cctvFramesSent: CCTVFrameCapture[];
+  cctvVideoClip?: CCTVVideoClip | null;
   metricsAtEvaluation: SimulationMetrics;
 }
 

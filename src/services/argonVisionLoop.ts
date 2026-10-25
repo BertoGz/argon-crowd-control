@@ -2,6 +2,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import type {
   ArgonVisualCritique,
   CCTVFrameCapture,
+  CCTVVideoClip,
   PassCriteriaConfig,
   PhysicalInterventionPlan,
   ScenarioMode,
@@ -17,11 +18,124 @@ export interface ArgonAnalysisRequest {
   tip: TipPoint;
   currentPlan: PhysicalInterventionPlan;
   cctvFrames: CCTVFrameCapture[];
+  cctvVideoClip?: CCTVVideoClip | null;
   allowSecondaryAttractors?: boolean;
   passCriteria?: PassCriteriaConfig;
   // Used ONLY for displaying ground-truth comparison in UI / fallback when no API key is entered;
   // NEVER injected into the prompt sent to Gemini 4 Argon!
   groundTruthMetricsForUIOnly: SimulationMetrics;
+}
+
+export interface LowFpsCCTVRecorderController {
+  stopAndFinalize: (durationSimSec: number) => Promise<CCTVVideoClip | null>;
+  cancel: () => void;
+}
+
+/**
+ * Starts a low-framerate (4 FPS) MediaRecorder stream directly on the monochrome CCTV canvas.
+ * Produces a compact (~80-150 KiB) video/webm or video/mp4 clip for native Gemini multimodal video analysis.
+ */
+export function startLowFpsCCTVRecorder(
+  canvas: HTMLCanvasElement | null,
+  fps = 4
+): LowFpsCCTVRecorderController | null {
+  if (
+    !canvas ||
+    typeof window === 'undefined' ||
+    typeof MediaRecorder === 'undefined' ||
+    typeof canvas.captureStream !== 'function'
+  ) {
+    return null;
+  }
+
+  try {
+    const stream = canvas.captureStream(fps);
+    const mimeCandidates = [
+      'video/webm;codecs=vp8',
+      'video/webm;codecs=vp9',
+      'video/webm',
+      'video/mp4',
+    ];
+    const supportedMime =
+      mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+
+    const recorder = supportedMime
+      ? new MediaRecorder(stream, {
+          mimeType: supportedMime,
+          videoBitsPerSecond: 180_000, // Low bitrate for fast base64 upload
+        })
+      : new MediaRecorder(stream, { videoBitsPerSecond: 180_000 });
+
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) {
+        chunks.push(ev.data);
+      }
+    };
+
+    recorder.start(250);
+
+    const stopStreamTracks = () => {
+      stream.getTracks().forEach((t) => t.stop());
+    };
+
+    return {
+      stopAndFinalize: (durationSimSec: number) =>
+        new Promise<CCTVVideoClip | null>((resolve) => {
+          if (recorder.state === 'inactive') {
+            stopStreamTracks();
+            resolve(null);
+            return;
+          }
+
+          recorder.onstop = () => {
+            stopStreamTracks();
+            const rawMime = (recorder.mimeType || supportedMime || 'video/webm').split(';')[0];
+            const blob = new Blob(chunks, { type: rawMime });
+            if (blob.size < 100) {
+              resolve(null);
+              return;
+            }
+            const objectUrl = URL.createObjectURL(blob);
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const res = typeof reader.result === 'string' ? reader.result : '';
+              const base64Data = res.replace(/^data:[^;]+;base64,/, '');
+              resolve({
+                base64Data,
+                mimeType: rawMime,
+                objectUrl,
+                fps,
+                durationSimSec: Number(durationSimSec.toFixed(1)),
+                sizeKiB: Math.max(1, Math.round(blob.size / 1024)),
+              });
+            };
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          };
+
+          try {
+            recorder.stop();
+          } catch {
+            stopStreamTracks();
+            resolve(null);
+          }
+        }),
+      cancel: () => {
+        try {
+          if (recorder.state !== 'inactive') {
+            recorder.onstop = null;
+            recorder.stop();
+          }
+        } catch {
+          // ignore
+        }
+        stopStreamTracks();
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -63,14 +177,14 @@ export function buildZeroCheatVisualPrompt(
   2. Deploy 2 to 8 'wave_breaker' and 'chicane' barriers in concentric staggered rings (3m to 7.5m around the Attraction Tip) to meter inflow and absorb radial inward crowd pressure waves so everyone reaches the single Tip safely with visible spacing between silhouettes.`;
 
   return `You are Gemini 4 Argon acting as an autonomous Closed-Loop Spatial Crowd Safety Architect.
-You are looking at ${iteration === 1 ? 'the initial baseline' : `Iteration #${iteration}`} sequential overhead monochrome CCTV camera frames captured at T+1.5s, T+3.5s, T+5.5s, and T+7.5s.
+You are watching ${iteration === 1 ? 'the initial baseline' : `Iteration #${iteration}`} low-framerate (4 FPS) overhead monochrome CCTV video clip (and keyframe snapshots from T+1.5s to T+7.5s).
 
 IMPORTANT ZERO-CHEAT & NO-COLOR-CHEATING RULE:
 1. You do NOT have access to internal game-engine arrays, coordinates, or pressure telemetry.
-2. The CCTV feed is strictly MONOCHROME: every pedestrian is rendered as an identical neutral gray/white head-and-shoulder silhouette. There are NO red/amber/green color-coded dots or artificial velocity arrows.
-3. You must deduce crowd movement direction, bottlenecks, and crush pockets purely from SPATIAL GEOMETRY & TEMPORAL MOTION across the 4 frames:
-   - Direction of travel: Compare where pedestrian silhouettes shift from Frame 1 (T+1.5s) -> Frame 2 (T+3.5s) -> Frame 3 (T+5.5s) -> Frame 4 (T+7.5s).
-   - Crowd Crush / Jamming Detection: Look for high pixel occlusion where dozens of silhouettes overlap into a solid bright white/gray mass with zero dark floor visible between heads (>4-5 people/m²), semicircular arch formations blocking an exit doorway, and frame-to-frame stagnation where the core pile stops advancing between Frame 3 and Frame 4 while outer silhouettes continue compressing into the back of the pile.
+2. The CCTV video stream is strictly MONOCHROME: every pedestrian is rendered as an identical neutral gray/white head-and-shoulder silhouette. There are NO red/amber/green color-coded dots or artificial velocity arrows.
+3. You must deduce crowd movement direction, bottlenecks, and crush pockets purely from SPATIAL GEOMETRY & TEMPORAL MOTION across the low-framerate video clip:
+   - Direction of travel: Observe how pedestrian silhouettes flow from T+1.5s -> T+3.5s -> T+5.5s -> T+7.5s.
+   - Crowd Crush / Jamming Detection: Look for high pixel occlusion where dozens of silhouettes overlap into a solid bright white/gray mass with zero dark floor visible between heads (>4-5 people/m²), semicircular arch formations blocking an exit doorway, and temporal stagnation where the core pile stops advancing while outer silhouettes continue compressing into the back of the pile.
 
 ${modeGoal}
 
@@ -258,19 +372,29 @@ export async function analyzeCCTVFramesWithArgon(
   // Run pure monochrome pixel density & frame-to-frame stagnation analysis on the captured CCTV PNGs
   const opticalResult = await analyzeMonochromeCCTVPixels(req.cctvFrames);
 
-  // If user has provided a Gemini API key, call @google/genai with the actual CCTV PNG frames!
+  // If user has provided a Gemini API key, call @google/genai with the actual low-FPS CCTV video clip!
   if (req.apiKey && req.apiKey.trim().length > 10) {
     const ai = new GoogleGenAI({ apiKey: req.apiKey.trim() });
 
-    const imageParts = req.cctvFrames.map((frame) => {
-      const base64Data = frame.dataUrl.replace(/^data:image\/\w+;base64,/, '');
-      return {
-        inlineData: {
-          data: base64Data,
-          mimeType: 'image/png',
-        },
-      };
-    });
+    const mediaParts =
+      req.cctvVideoClip && req.cctvVideoClip.base64Data.length > 100
+        ? [
+            {
+              inlineData: {
+                data: req.cctvVideoClip.base64Data,
+                mimeType: req.cctvVideoClip.mimeType,
+              },
+            },
+          ]
+        : req.cctvFrames.map((frame) => {
+            const base64Data = frame.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+            return {
+              inlineData: {
+                data: base64Data,
+                mimeType: 'image/png',
+              },
+            };
+          });
 
     const modelsToTry = [
       req.modelId,
@@ -285,7 +409,7 @@ export async function analyzeCCTVFramesWithArgon(
         const response = await ai.models.generateContent({
           model: modelName,
           contents: [
-            ...imageParts,
+            ...mediaParts,
             { text: promptText },
           ],
           config: {
@@ -417,7 +541,10 @@ export async function analyzeCCTVFramesWithArgon(
         );
 
         const groundTruthCrushKnm = req.groundTruthMetricsForUIOnly.peakCrushPressure;
-        const logMsg = `[LIVE @google/genai] Model=${modelName} | Iter=#${req.iteration} | CCTV Density=${opticalDensityPpm2} p/m² -> InferredForce=${inferredCrushForceKnm} kN/m (Physics=${groundTruthCrushKnm} kN/m) | Score=${evalSafetyScore}/100`;
+        const videoTag = req.cctvVideoClip
+          ? `Video=${req.cctvVideoClip.mimeType}@${req.cctvVideoClip.fps}fps(${req.cctvVideoClip.sizeKiB}KB)`
+          : `Frames=${req.cctvFrames.length}`;
+        const logMsg = `[LIVE @google/genai] Model=${modelName} | ${videoTag} | CCTV Density=${opticalDensityPpm2} p/m² -> InferredForce=${inferredCrushForceKnm} kN/m (Physics=${groundTruthCrushKnm} kN/m) | Score=${evalSafetyScore}/100`;
         console.info(logMsg);
 
         return {
@@ -434,7 +561,7 @@ export async function analyzeCCTVFramesWithArgon(
           groundTruthCrushForceKnm: groundTruthCrushKnm,
           observedCrowdBehavior:
             parsed.observedCrowdBehavior ||
-            'Observed high-density crowd movement across sequential monochrome CCTV frames.',
+            'Observed high-density crowd movement across low-framerate monochrome CCTV video.',
           detectedBottlenecks: Array.isArray(parsed.detectedBottlenecks)
             ? parsed.detectedBottlenecks
             : [],
@@ -446,6 +573,7 @@ export async function analyzeCCTVFramesWithArgon(
             'Deploying wave-breaker barriers and directional guidance beacons.',
           proposedPlan: sanitized,
           cctvFramesSent: req.cctvFrames,
+          cctvVideoClip: req.cctvVideoClip || null,
           metricsAtEvaluation: req.groundTruthMetricsForUIOnly,
         };
       } catch (err) {
@@ -1001,6 +1129,7 @@ function runOpticalCanvasFallbackCritique(
           : `Iteration #${req.iteration} -> #${req.iteration + 1}: Expanding to ${nextPlan.barriers.length} physical baffles and 4 open gates with 3 signage beacons to reduce crush force below ${passCriteria.maxCrushPressure.toFixed(1)} kN/m.`,
         proposedPlan: nextPlan,
         cctvFramesSent: req.cctvFrames,
+        cctvVideoClip: req.cctvVideoClip || null,
         metricsAtEvaluation: req.groundTruthMetricsForUIOnly,
       };
     } else {
@@ -1024,6 +1153,7 @@ function runOpticalCanvasFallbackCritique(
           'Verification passed! Retaining current verified physical barrier & gate configuration.',
         proposedPlan: req.currentPlan,
         cctvFramesSent: req.cctvFrames,
+        cctvVideoClip: req.cctvVideoClip || null,
         metricsAtEvaluation: req.groundTruthMetricsForUIOnly,
       };
     }
@@ -1066,6 +1196,7 @@ function runOpticalCanvasFallbackCritique(
           : `Iteration #${req.iteration} -> #${req.iteration + 1}: Expanding concentric wave-breaker & chicane protection ring to ${nextPlan.barriers.length} barriers around (${tx}m, ${tz}m) to keep crush force below ${passCriteria.maxCrushPressure.toFixed(1)} kN/m.`,
         proposedPlan: nextPlan,
         cctvFramesSent: req.cctvFrames,
+        cctvVideoClip: req.cctvVideoClip || null,
         metricsAtEvaluation: req.groundTruthMetricsForUIOnly,
       };
     } else {
@@ -1091,6 +1222,7 @@ function runOpticalCanvasFallbackCritique(
           'Verification passed! Crowd converges safely toward the single Attraction Tip without crush pockets.',
         proposedPlan: req.currentPlan,
         cctvFramesSent: req.cctvFrames,
+        cctvVideoClip: req.cctvVideoClip || null,
         metricsAtEvaluation: req.groundTruthMetricsForUIOnly,
       };
     }

@@ -30,10 +30,13 @@ import { Venue3DViewport } from './components/Venue3DViewport';
 import {
   analyzeCCTVFramesWithArgon,
   buildZeroCheatVisualPrompt,
+  startLowFpsCCTVRecorder,
 } from './services/argonVisionLoop';
+import type { LowFpsCCTVRecorderController } from './services/argonVisionLoop';
 import type {
   ArgonVisualCritique,
   CCTVFrameCapture,
+  CCTVVideoClip,
   PhysicalInterventionPlan,
   PresetScenario,
   SimulationMetrics,
@@ -90,6 +93,18 @@ export function App() {
 
   const [capturedFrames, setCapturedFrames] = useState<CCTVFrameCapture[]>([]);
   const capturedFramesRef = useRef<CCTVFrameCapture[]>([]);
+
+  // Low-framerate (4 FPS) CCTV Video Recorder & Latest Recorded Clip
+  const cctvRecorderRef = useRef<LowFpsCCTVRecorderController | null>(null);
+  const [latestVideoClip, setLatestVideoClip] = useState<CCTVVideoClip | null>(null);
+  const latestVideoClipRef = useRef<CCTVVideoClip | null>(null);
+
+  const resetCCTVVideoRecorder = useCallback(() => {
+    cctvRecorderRef.current?.cancel();
+    cctvRecorderRef.current = null;
+    latestVideoClipRef.current = null;
+    setLatestVideoClip(null);
+  }, []);
 
   useEffect(() => {
     isAutoLoopActiveRef.current = isAutoLoopActive;
@@ -151,6 +166,7 @@ export function App() {
     setLoopIteration(1);
     setCapturedFrames([]);
     capturedFramesRef.current = [];
+    resetCCTVVideoRecorder();
     setCritiqueHistory([]);
     setSelectedCritiqueIndex(0);
     engineRef.current.reset(preset.agentCount, preset.tip, initialPlan);
@@ -167,15 +183,21 @@ export function App() {
       engineRef.current.reset(activePreset.agentCount, newTip, currentPlan);
       setCapturedFrames([]);
       capturedFramesRef.current = [];
+      resetCCTVVideoRecorder();
       setMetrics(engineRef.current.getMetrics());
       setIsRunning(true);
     },
-    [activePreset.agentCount, currentPlan]
+    [activePreset.agentCount, currentPlan, resetCCTVVideoRecorder]
   );
 
-  // Trigger Argon Visual Verification on the 4 captured CCTV frames
+  // Trigger Argon Visual Verification on the 4 FPS CCTV video clip + keyframe snapshots
   const triggerArgonVerification = useCallback(
-    async (framesToAnalyze: CCTVFrameCapture[], iterNum: number, planUsed: PhysicalInterventionPlan) => {
+    async (
+      framesToAnalyze: CCTVFrameCapture[],
+      iterNum: number,
+      planUsed: PhysicalInterventionPlan,
+      videoClip?: CCTVVideoClip | null
+    ) => {
       if (isAnalyzingRef.current) return;
       setIsAnalyzingCCTV(true);
       setIsRunning(false); // Pause physics while Argon critiques the CCTV recording
@@ -190,6 +212,7 @@ export function App() {
           tip: { ...engineRef.current.tip },
           currentPlan: planUsed,
           cctvFrames: framesToAnalyze,
+          cctvVideoClip: videoClip ?? latestVideoClipRef.current,
           allowSecondaryAttractors: allowSecondaryRef.current,
           passCriteria: {
             maxCrushPressure: maxCrushThresholdRef.current,
@@ -214,6 +237,7 @@ export function App() {
             setLoopIteration(nextIter);
             setCapturedFrames([]);
             capturedFramesRef.current = [];
+            resetCCTVVideoRecorder();
             engineRef.current.reset(
               activePreset.agentCount,
               engineRef.current.tip,
@@ -233,13 +257,20 @@ export function App() {
         setIsRunning(true);
       }
     },
-    [apiKey, modelId, activePreset.agentCount]
+    [apiKey, modelId, activePreset.agentCount, resetCCTVVideoRecorder]
   );
 
   // Called on every simulation frame tick from Venue3DViewport
   const handleCCTVFrameTick = useCallback(
     (simSec: number, captureFrameFn: () => string) => {
       const existingCount = capturedFramesRef.current.length;
+
+      // Start the 4 FPS MediaRecorder on the CCTV canvas at the beginning of each run
+      if (existingCount === 0 && !cctvRecorderRef.current && !latestVideoClipRef.current) {
+        captureFrameFn(); // ensure canvas has first frame rendered
+        cctvRecorderRef.current = startLowFpsCCTVRecorder(cctvPreviewCanvasRef.current, 4);
+      }
+
       if (existingCount < CAPTURE_TIMESTAMPS.length) {
         const nextTargetSec = CAPTURE_TIMESTAMPS[existingCount];
         if (simSec >= nextTargetSec) {
@@ -255,28 +286,44 @@ export function App() {
             capturedFramesRef.current = nextList;
             setCapturedFrames(nextList);
 
-            // Once all 4 sequential CCTV frames are captured in Autonomous Loop mode OR single-step queued review, trigger Argon!
-            if (
-              nextList.length === CAPTURE_TIMESTAMPS.length &&
-              (isAutoLoopActiveRef.current || isAwaiting4FramesRef.current) &&
-              !isAnalyzingRef.current
-            ) {
-              if (isAwaiting4FramesRef.current) {
-                setIsAwaiting4Frames(false);
-                isAwaiting4FramesRef.current = false;
-                setActiveRightTab('critique');
-              }
-              triggerArgonVerification(
-                nextList,
-                loopIterationRef.current,
-                {
-                  barriers: [...engineRef.current.barriers],
-                  beacons: [...engineRef.current.beacons],
-                  openGates: engineRef.current.gates
-                    .filter((g) => g.isOpen)
-                    .map((g) => g.id),
+            // Once all 4 timestamps (T+7.5s) are reached, finalize the 4 FPS video clip!
+            if (nextList.length === CAPTURE_TIMESTAMPS.length) {
+              const activeRec = cctvRecorderRef.current;
+              cctvRecorderRef.current = null;
+              const shouldTriggerArgon =
+                (isAutoLoopActiveRef.current || isAwaiting4FramesRef.current) &&
+                !isAnalyzingRef.current;
+
+              const planSnapshot: PhysicalInterventionPlan = {
+                barriers: [...engineRef.current.barriers],
+                beacons: [...engineRef.current.beacons],
+                openGates: engineRef.current.gates
+                  .filter((g) => g.isOpen)
+                  .map((g) => g.id),
+              };
+              const iterSnapshot = loopIterationRef.current;
+
+              if (activeRec) {
+                void activeRec.stopAndFinalize(simSec).then((clip) => {
+                  latestVideoClipRef.current = clip;
+                  setLatestVideoClip(clip);
+                  if (shouldTriggerArgon) {
+                    if (isAwaiting4FramesRef.current) {
+                      setIsAwaiting4Frames(false);
+                      isAwaiting4FramesRef.current = false;
+                      setActiveRightTab('critique');
+                    }
+                    void triggerArgonVerification(nextList, iterSnapshot, planSnapshot, clip);
+                  }
+                });
+              } else if (shouldTriggerArgon) {
+                if (isAwaiting4FramesRef.current) {
+                  setIsAwaiting4Frames(false);
+                  isAwaiting4FramesRef.current = false;
+                  setActiveRightTab('critique');
                 }
-              );
+                void triggerArgonVerification(nextList, iterSnapshot, planSnapshot, latestVideoClipRef.current);
+              }
             }
           }
         }
@@ -296,6 +343,7 @@ export function App() {
     setLoopIteration(1);
     setCapturedFrames([]);
     capturedFramesRef.current = [];
+    resetCCTVVideoRecorder();
     setCritiqueHistory([]);
     engineRef.current.reset(
       activePreset.agentCount,
@@ -307,13 +355,13 @@ export function App() {
     setIsRunning(true);
   };
 
-  // Manually trigger Argon analysis: if 4 frames are already captured, critique immediately;
-  // otherwise queue review to fire automatically as soon as the 4th CCTV frame is snapped.
+  // Manually trigger Argon analysis: if 4 frames / video clip are already captured, critique immediately;
+  // otherwise queue review to fire automatically as soon as T+7.5s finishes recording.
   const handleAnalyzeNow = () => {
     const frames = [...capturedFramesRef.current];
     if (frames.length >= CAPTURE_TIMESTAMPS.length) {
       setActiveRightTab('critique');
-      triggerArgonVerification(frames, loopIteration, currentPlan);
+      void triggerArgonVerification(frames, loopIteration, currentPlan, latestVideoClipRef.current);
     } else {
       setIsAwaiting4Frames(true);
       isAwaiting4FramesRef.current = true;
@@ -321,13 +369,14 @@ export function App() {
     }
   };
 
-  // Apply a proposed plan from "Apply Fix" and automatically review once the 4 new CCTV frames are captured
+  // Apply a proposed plan from "Apply Fix" and automatically review once the new 4 FPS CCTV clip finishes
   const handleApplyProposedPlan = (plan: PhysicalInterventionPlan, nextIter: number) => {
     setCurrentPlan(plan);
     setLoopIteration(nextIter);
     loopIterationRef.current = nextIter;
     setCapturedFrames([]);
     capturedFramesRef.current = [];
+    resetCCTVVideoRecorder();
     setIsAwaiting4Frames(true);
     isAwaiting4FramesRef.current = true;
     engineRef.current.reset(
@@ -349,6 +398,7 @@ export function App() {
     setLoopIteration(1);
     setCapturedFrames([]);
     capturedFramesRef.current = [];
+    resetCCTVVideoRecorder();
     engineRef.current.reset(
       activePreset.agentCount,
       engineRef.current.tip,
@@ -447,42 +497,8 @@ export function App() {
           })}
         </div>
 
-        {/* Right Action Controls: Closed-Loop Trigger + API Key */}
+        {/* Right Action Controls: API Key */}
         <div className="flex items-center gap-2">
-          <button
-            onClick={
-              isAutoLoopActive
-                ? () => setIsAutoLoopActive(false)
-                : handleStartAutonomousLoop
-            }
-            disabled={isAnalyzingCCTV && !isAutoLoopActive}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 ${
-              isAutoLoopActive
-                ? 'bg-amber-500 text-slate-950 hover:bg-amber-400'
-                : 'bg-sky-500 text-slate-950 hover:bg-sky-400'
-            }`}
-          >
-            {isAutoLoopActive || isAnalyzingCCTV ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5" />
-            )}
-            {isAutoLoopActive
-              ? `Stop Loop (Iter #${loopIteration})`
-              : isAnalyzingCCTV
-              ? `Analyzing Iter #${loopIteration}...`
-              : 'Run Argon Loop'}
-          </button>
-
-        <button
-            onClick={() => setShowZeroCheatModal(true)}
-            className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 flex items-center gap-1.5 transition cursor-pointer"
-            title="Inspect the exact CCTV images & zero-cheat prompt sent to Gemini 4 Argon"
-          >
-            <Code2 className="w-3.5 h-3.5 text-sky-400" />
-            Zero-Cheat Proof
-        </button>
-
           <button
             onClick={() => setShowApiConfig(!showApiConfig)}
             className={`p-1.5 rounded-lg border transition cursor-pointer ${
@@ -673,6 +689,7 @@ export function App() {
                 onClick={() => {
                   setCapturedFrames([]);
                   capturedFramesRef.current = [];
+                  resetCCTVVideoRecorder();
                   engineRef.current.reset(
                     activePreset.agentCount,
                     engineRef.current.tip,
@@ -1012,10 +1029,10 @@ export function App() {
               <div>
                 <h2 className="text-xs font-semibold text-white flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-                  Monochrome Overhead CCTV (Zero-Cheat Input)
+                  Low-Framerate CCTV Stream (4 FPS Video)
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Uncolored overhead silhouette feed sent to Gemini 4 Argon at T+1.5s, 3.5s, 5.5s, and 7.5s.
+                  Records a 4 FPS monochrome security video clip (T+0.0s → T+7.5s) sent directly to Gemini 4 Argon.
                 </p>
               </div>
               <button
@@ -1031,7 +1048,7 @@ export function App() {
                 ) : isAwaiting4Frames ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Capturing ({capturedFrames.length}/4)...
+                    Recording 4 FPS ({capturedFrames.length}/4)...
                   </>
                 ) : (
                   <>
@@ -1051,6 +1068,11 @@ export function App() {
                 className="w-full aspect-[480/330] object-contain block"
               />
               <div className="cctv-scanlines absolute inset-0 pointer-events-none" />
+              <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-slate-950/85 border border-slate-800 text-[10px] font-mono text-slate-300">
+                {latestVideoClip
+                  ? `CLIP READY • 4 FPS • ${latestVideoClip.sizeKiB} KB`
+                  : 'REC 4 FPS STREAM...'}
+              </div>
             </div>
 
             {/* 4 Sequential Keyframe Slots */}
@@ -1293,15 +1315,19 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* CCTV Frames Inspected in This Iteration */}
+                  {/* CCTV Video & Keyframes Inspected in This Iteration */}
                   <div className="mt-auto">
                     <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1.5">
-                      <span>Frames Inspected (Iter #{activeCritique.iteration}):</span>
+                      <span>
+                        {activeCritique.cctvVideoClip
+                          ? `4 FPS CCTV Video Inspected (${activeCritique.cctvVideoClip.mimeType} • ${activeCritique.cctvVideoClip.sizeKiB} KB):`
+                          : `CCTV Sequence Inspected (Iter #${activeCritique.iteration}):`}
+                      </span>
                       <button
                         onClick={() => setShowZeroCheatModal(true)}
                         className="text-sky-400 hover:underline font-mono cursor-pointer"
                       >
-                        Inspect Raw Payload →
+                        Inspect Raw Video Payload →
                       </button>
                     </div>
                     <div className="grid grid-cols-4 gap-1.5">
@@ -1349,12 +1375,31 @@ export function App() {
             </div>
             <div className="p-5 overflow-y-auto space-y-4 text-xs">
               <div className="bg-sky-500/10 border border-sky-500/30 rounded-lg p-3 text-sky-200">
-                <strong>How Zero-Cheat CCTV Mode Works:</strong> Instead of passing ground-truth agent arrays (<code>agents[i].x, agents[i].vx</code>) to Gemini 4 Argon, the simulator renders overhead CCTV optical frames with a printed metric grid (<code>X:-20..+20, Z:-15..+15</code>) and sends only the <strong>4 PNG images</strong> + current barrier JSON. Argon must visually perceive crowd motion and bottlenecks from the pixels alone.
+                <strong>How Zero-Cheat Low-Framerate CCTV Video Mode Works:</strong> Instead of passing ground-truth agent arrays (<code>agents[i].x, agents[i].vx</code>) to Gemini 4 Argon, the simulator records a <strong>4 FPS monochrome overhead CCTV video stream</strong> (<code>video/webm</code>) and sends the raw video bytes + current barrier JSON. Argon must visually perceive crowd motion, stagnation, and crush bottlenecks from the video stream alone.
               </div>
+
+              {(activeCritique?.cctvVideoClip || latestVideoClip) && (
+                <div>
+                  <div className="font-mono text-[11px] uppercase text-slate-400 mb-1.5">
+                    1. Recorded 4 FPS Monochrome CCTV Video Attachment ({(activeCritique?.cctvVideoClip || latestVideoClip)?.mimeType} • {(activeCritique?.cctvVideoClip || latestVideoClip)?.sizeKiB} KB)
+                  </div>
+                  <div className="border border-slate-700 rounded-lg p-2 bg-[#090d14] flex justify-center">
+                    <video
+                      src={(activeCritique?.cctvVideoClip || latestVideoClip)?.objectUrl}
+                      controls
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      className="max-h-52 rounded border border-slate-800"
+                    />
+                  </div>
+                </div>
+              )}
 
               <div>
                 <div className="font-mono text-[11px] uppercase text-slate-400 mb-1.5">
-                  1. Multimodal Image Attachments (4 Base64 PNG Frames from CCTV Canvas)
+                  2. Keyframe Timeline Snapshots (T+1.5s, T+3.5s, T+5.5s, T+7.5s)
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                   {(activeCritique?.cctvFramesSent || capturedFrames).map((f) => (
