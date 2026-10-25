@@ -127,6 +127,7 @@ export class CrowdSimulationEngine {
   public tip: TipPoint;
   public elapsedSeconds = 0;
   public peakCrushPressure = 0;
+  public peakLocalDensity = 0;
   public crushPocketEvents = 0;
   public crushThreshold = 3.8;
   private rngSeed = 1337;
@@ -155,6 +156,7 @@ export class CrowdSimulationEngine {
     this.tip = { ...tip };
     this.elapsedSeconds = 0;
     this.peakCrushPressure = 0;
+    this.peakLocalDensity = 0;
     this.crushPocketEvents = 0;
 
     this.gates = DEFAULT_GATES.map((g) => ({
@@ -558,18 +560,19 @@ export class CrowdSimulationEngine {
       }
 
       // Compute physical crush pressure (kN/m)
-      // When wave-breakers or funnel barriers split the crowd, radial pressure does not compound across the whole depth
+      // Driven by body-to-body granular compression force + wall/exit jamming + radial pressure compounding.
+      // When wave-breakers or funnel barriers segment the crowd, radial force chains are interrupted!
       const barrierReliefMultiplier =
         shieldedByBarrier || this.barriers.length >= 2
           ? Math.max(0.24, 1.0 - this.barriers.length * 0.12 - this.beacons.length * 0.04)
           : 1.0;
 
-      const rawPressure =
+      const rawCrushForceKnm =
         (contactForceSum * 0.85 + Math.max(0, a.localDensity - 3.0) * 0.72) *
         (0.75 + a.panic * 0.45) *
         barrierReliefMultiplier;
 
-      a.crushPressure = a.crushPressure * 0.75 + rawPressure * 0.25;
+      a.crushPressure = a.crushPressure * 0.75 + rawCrushForceKnm * 0.25;
 
       // Integrate velocity & position
       a.vx += fx * clampedDt;
@@ -618,12 +621,16 @@ export class CrowdSimulationEngine {
     const reachedTargetCount = this.agents.filter((a) => a.satisfiedAttract).length;
 
     let currentMaxPressure = 0;
+    let currentMaxDensity = 0;
     let criticalAgentCount = 0;
     let panicSum = 0;
     let hotspot: Vec2 | null = null;
 
     for (const a of active) {
       panicSum += a.panic;
+      if (a.localDensity > currentMaxDensity) {
+        currentMaxDensity = a.localDensity;
+      }
       if (a.crushPressure > currentMaxPressure) {
         currentMaxPressure = a.crushPressure;
         hotspot = { x: Number(a.x.toFixed(1)), z: Number(a.z.toFixed(1)) };
@@ -635,6 +642,9 @@ export class CrowdSimulationEngine {
 
     if (currentMaxPressure > this.peakCrushPressure) {
       this.peakCrushPressure = currentMaxPressure;
+    }
+    if (currentMaxDensity > this.peakLocalDensity) {
+      this.peakLocalDensity = currentMaxDensity;
     }
     if (criticalAgentCount >= 3) {
       this.crushPocketEvents += 1;
@@ -660,6 +670,7 @@ export class CrowdSimulationEngine {
       reachedTargetCount,
       peakCrushPressure: Number(this.peakCrushPressure.toFixed(2)),
       currentMaxPressure: Number(currentMaxPressure.toFixed(2)),
+      peakLocalDensity: Number(this.peakLocalDensity.toFixed(2)),
       crushPocketEvents: this.crushPocketEvents,
       criticalAgentCount,
       avgPanic: Number(avgPanic.toFixed(2)),

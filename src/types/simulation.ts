@@ -82,8 +82,9 @@ export interface SimulationMetrics {
   reachedTargetCount: number;
   peakCrushPressure: number;     // kN/m (> 4.5 kN/m is lethal crowd crush threshold)
   currentMaxPressure: number;
+  peakLocalDensity: number;      // people/m^2 optical/spatial crowd density
   crushPocketEvents: number;     // cumulative frame-seconds where agents exceed critical pressure
-  criticalAgentCount: number;    // agents currently experiencing > 3.8 kN/m
+  criticalAgentCount: number;    // agents currently experiencing > crushThreshold kN/m
   avgPanic: number;
   flowEfficiency: number;        // 0 - 100%
   jammingDetected: boolean;
@@ -106,6 +107,9 @@ export interface ArgonVisualCritique {
   latencyMs: number;
   scenarioSuccess: boolean;
   safetyScore: number; // 0 to 100
+  opticalDensityPpm2: number;         // Optical density (people/m²) measured from monochrome CCTV
+  inferredCrushForceKnm: number;      // Crush force (kN/m) inferred by Argon from CCTV density + stagnation
+  groundTruthCrushForceKnm: number;   // Actual physics engine crush force (kN/m) for side-by-side comparison
   observedCrowdBehavior: string;
   detectedBottlenecks: string[];
   rootCauseDiagnosis: string;

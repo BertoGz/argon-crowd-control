@@ -23,6 +23,8 @@ interface Venue3DViewportProps {
   onMetricsUpdate: (metrics: SimulationMetrics) => void;
   onCCTVFrameTick: (simSec: number, captureFrameFn: () => string) => void;
   cctvPreviewCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  highlightedItemId?: string | null;
+  onSelectIntervention?: (id: string | null) => void;
 }
 
 export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
@@ -37,6 +39,7 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
   onMetricsUpdate,
   onCCTVFrameTick,
   cctvPreviewCanvasRef,
+  highlightedItemId = null,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [hoverCoords, setHoverCoords] = useState<{ x: number; z: number } | null>(null);
@@ -47,6 +50,7 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
   const onMetricsUpdateRef = useRef(onMetricsUpdate);
   const onCCTVFrameTickRef = useRef(onCCTVFrameTick);
   const onTipPlacedRef = useRef(onTipPlacedByUser);
+  const highlightedItemIdRef = useRef<string | null>(highlightedItemId);
 
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -54,7 +58,8 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
     onMetricsUpdateRef.current = onMetricsUpdate;
     onCCTVFrameTickRef.current = onCCTVFrameTick;
     onTipPlacedRef.current = onTipPlacedByUser;
-  }, [isRunning, simSpeed, onMetricsUpdate, onCCTVFrameTick, onTipPlacedByUser]);
+    highlightedItemIdRef.current = highlightedItemId;
+  }, [isRunning, simSpeed, onMetricsUpdate, onCCTVFrameTick, onTipPlacedByUser, highlightedItemId]);
 
   // Orbit angle state for manual camera rotation
   const cameraOrbitRef = useRef({ theta: 0.0, phi: 0.85, distance: 38 });
@@ -172,7 +177,7 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
     const tipCoreMesh = new THREE.Mesh(tipCoreGeo, tipCoreMat);
     tipGroup.add(tipCoreMesh);
 
-    const tipPulseGeo = new THREE.RingGeometry(0.8, 1.15, 36);
+    const tipPulseGeo = new THREE.RingGeometry(0.85, 1.1, 64);
     tipPulseGeo.rotateX(-Math.PI / 2);
     const tipPulseMat1 = new THREE.MeshBasicMaterial({
       color: 0xef4444,
@@ -189,15 +194,18 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
     tipPulseMesh2.position.y = 0.05;
     tipGroup.add(tipPulseMesh2);
 
-    // Rebuild perimeter walls & gates + barriers + beacons whenever plan changes
+    // Rebuild perimeter walls & gates + barriers + beacons whenever plan or highlight changes
     let lastPlanSignature = '';
+    const highlightAnimatedMeshes: THREE.Object3D[] = [];
 
     const syncStaticArchitecture = () => {
       const eng = engineRef.current;
+      const hlId = highlightedItemIdRef.current;
       const sig = JSON.stringify({
         gates: eng.gates.map((g) => g.isOpen),
         barriers: eng.barriers,
         beacons: eng.beacons,
+        hlId,
       });
       if (sig === lastPlanSignature) return;
       lastPlanSignature = sig;
@@ -205,6 +213,7 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
       // Clear groups
       wallsGroup.clear();
       interventionsGroup.clear();
+      highlightAnimatedMeshes.length = 0;
 
       const wallMat = new THREE.MeshStandardMaterial({
         color: 0x1e293b,
@@ -313,6 +322,9 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
         const midZ = (bar.z1 + bar.z2) / 2;
         const angle = Math.atan2(dz, dx);
 
+        const isHighlighted = hlId === 'ALL' || hlId === bar.id;
+        const isDimmed = hlId !== null && !isHighlighted;
+
         const barColor =
           bar.kind === 'funnel_wall'
             ? 0x38bdf8
@@ -321,64 +333,118 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
             : 0xf59e0b;
 
         const barMat = new THREE.MeshStandardMaterial({
-          color: 0x1e293b,
+          color: isHighlighted ? barColor : 0x1e293b,
           emissive: barColor,
-          emissiveIntensity: 0.55,
+          emissiveIntensity: isHighlighted ? 1.15 : isDimmed ? 0.2 : 0.55,
           roughness: 0.3,
           metalness: 0.7,
+          transparent: isDimmed,
+          opacity: isDimmed ? 0.45 : 1,
         });
 
         const barMesh = new THREE.Mesh(
-          new THREE.BoxGeometry(len, 1.35, 0.36),
+          new THREE.BoxGeometry(len, isHighlighted ? 1.65 : 1.35, isHighlighted ? 0.48 : 0.36),
           barMat
         );
-        barMesh.position.set(midX, 0.68, midZ);
+        barMesh.position.set(midX, isHighlighted ? 0.82 : 0.68, midZ);
         barMesh.rotation.y = -angle;
         interventionsGroup.add(barMesh);
 
         // Glowing top rail
-        const railMat = new THREE.MeshBasicMaterial({ color: barColor });
+        const railMat = new THREE.MeshBasicMaterial({
+          color: isHighlighted ? 0xffffff : barColor,
+          transparent: isDimmed,
+          opacity: isDimmed ? 0.4 : 1,
+        });
         const railMesh = new THREE.Mesh(
-          new THREE.BoxGeometry(len + 0.08, 0.14, 0.42),
+          new THREE.BoxGeometry(len + 0.08, 0.16, isHighlighted ? 0.52 : 0.42),
           railMat
         );
-        railMesh.position.set(midX, 1.38, midZ);
+        railMesh.position.set(midX, isHighlighted ? 1.68 : 1.38, midZ);
         railMesh.rotation.y = -angle;
         interventionsGroup.add(railMesh);
+
+        if (isHighlighted) {
+          // Floor spotlight ring + vertical locator beam
+          const ringRadius = Math.max(2.2, len * 0.62);
+          const hlRing = new THREE.Mesh(
+            new THREE.RingGeometry(ringRadius - 0.28, ringRadius, 48),
+            new THREE.MeshBasicMaterial({
+              color: 0xfbbf24,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.85,
+            })
+          );
+          hlRing.rotation.x = -Math.PI / 2;
+          hlRing.position.set(midX, 0.08, midZ);
+          interventionsGroup.add(hlRing);
+          highlightAnimatedMeshes.push(hlRing);
+
+          const beamMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.12, 0.45, 5.5, 16),
+            new THREE.MeshBasicMaterial({
+              color: 0xfbbf24,
+              transparent: true,
+              opacity: 0.25,
+            })
+          );
+          beamMesh.position.set(midX, 2.75, midZ);
+          interventionsGroup.add(beamMesh);
+        }
       }
 
       // Render Argon-deployed 3D Beacons (Exit Signage & Dispersion Attractors)
       for (const b of eng.beacons) {
+        const isHighlighted = hlId === 'ALL' || hlId === b.id;
+        const isDimmed = hlId !== null && !isHighlighted;
+
         const beaconColor =
           b.kind === 'dispersion_attractor' ? 0xc084fc : 0x22d3ee;
 
         // Holographic Pylon
         const pylonMesh = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.28, 0.38, 2.5, 16),
+          new THREE.CylinderGeometry(isHighlighted ? 0.42 : 0.28, isHighlighted ? 0.52 : 0.38, isHighlighted ? 3.2 : 2.5, 16),
           new THREE.MeshStandardMaterial({
-            color: beaconColor,
+            color: isHighlighted ? 0xffffff : beaconColor,
             emissive: beaconColor,
-            emissiveIntensity: 0.85,
+            emissiveIntensity: isHighlighted ? 1.35 : isDimmed ? 0.25 : 0.85,
             transparent: true,
-            opacity: 0.88,
+            opacity: isDimmed ? 0.4 : 0.92,
           })
         );
-        pylonMesh.position.set(b.x, 1.25, b.z);
+        pylonMesh.position.set(b.x, isHighlighted ? 1.6 : 1.25, b.z);
         interventionsGroup.add(pylonMesh);
 
         // Coverage radius ring on floor
         const covRing = new THREE.Mesh(
-          new THREE.RingGeometry(b.radius - 0.16, b.radius, 48),
+          new THREE.RingGeometry(b.radius - (isHighlighted ? 0.32 : 0.16), b.radius, 48),
           new THREE.MeshBasicMaterial({
             color: beaconColor,
             side: THREE.DoubleSide,
             transparent: true,
-            opacity: 0.35,
+            opacity: isHighlighted ? 0.85 : isDimmed ? 0.12 : 0.35,
           })
         );
         covRing.rotation.x = -Math.PI / 2;
-        covRing.position.set(b.x, 0.04, b.z);
+        covRing.position.set(b.x, 0.05, b.z);
         interventionsGroup.add(covRing);
+
+        if (isHighlighted) {
+          const innerRing = new THREE.Mesh(
+            new THREE.RingGeometry(1.1, 1.45, 36),
+            new THREE.MeshBasicMaterial({
+              color: 0x38bdf8,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.9,
+            })
+          );
+          innerRing.rotation.x = -Math.PI / 2;
+          innerRing.position.set(b.x, 0.09, b.z);
+          interventionsGroup.add(innerRing);
+          highlightAnimatedMeshes.push(innerRing);
+        }
 
         // Direction vector line pointing toward target exit if exit_signage
         if (b.kind === 'exit_signage') {
@@ -490,36 +556,38 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
       ctx.fillStyle = '#090d14';
       ctx.fillRect(0, 0, cw, ch);
 
-      const padX = 36;
-      const padY = 28;
-      const plotW = cw - padX * 2;
-      const plotH = ch - padY * 2;
+      const padLeft = 38;
+      const padRight = 38;
+      const padTop = 36;
+      const padBottom = 26;
+      const plotW = cw - padLeft - padRight;
+      const plotH = ch - padTop - padBottom;
 
       const toScreenX = (x: number) =>
-        padX + ((x + VENUE_HALF_W) / (VENUE_HALF_W * 2)) * plotW;
+        padLeft + ((x + VENUE_HALF_W) / (VENUE_HALF_W * 2)) * plotW;
       const toScreenY = (z: number) =>
-        padY + ((z + VENUE_HALF_D) / (VENUE_HALF_D * 2)) * plotH;
+        padTop + ((z + VENUE_HALF_D) / (VENUE_HALF_D * 2)) * plotH;
 
       // Subtle architectural floor reference grid (so Argon can reference spatial coordinates)
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
       ctx.lineWidth = 1;
-      ctx.font = '9px monospace';
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
+      ctx.font = '10px monospace';
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.65)';
 
       for (let gx = -20; gx <= 20; gx += 10) {
         const sx = toScreenX(gx);
         ctx.beginPath();
-        ctx.moveTo(sx, padY);
-        ctx.lineTo(sx, ch - padY);
+        ctx.moveTo(sx, padTop);
+        ctx.lineTo(sx, ch - padBottom);
         ctx.stroke();
-        ctx.fillText(`X:${gx}`, sx - 10, ch - 8);
+        ctx.fillText(`X:${gx}`, sx - 12, ch - 8);
       }
 
       for (let gz = -15; gz <= 15; gz += 5) {
         const sy = toScreenY(gz);
         ctx.beginPath();
-        ctx.moveTo(padX, sy);
-        ctx.lineTo(cw - padX, sy);
+        ctx.moveTo(padLeft, sy);
+        ctx.lineTo(cw - padRight, sy);
         ctx.stroke();
         if (gz % 10 === 0 || gz === -15 || gz === 15) {
           ctx.fillText(`Z:${gz}`, 4, sy + 3);
@@ -529,7 +597,7 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
       // Draw Arena Perimeter Walls
       ctx.strokeStyle = 'rgba(203, 213, 225, 0.65)';
       ctx.lineWidth = 2.5;
-      ctx.strokeRect(padX, padY, plotW, plotH);
+      ctx.strokeRect(padLeft, padTop, plotW, plotH);
 
       // Draw Physical Gate Openings (G1..G4)
       for (const g of eng.gates) {
@@ -666,6 +734,14 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
 
       syncStaticArchitecture();
 
+      // Pulse highlighted intervention rings
+      if (highlightAnimatedMeshes.length > 0) {
+        const hlScale = 1 + Math.sin(now * 0.008) * 0.12;
+        for (const m of highlightAnimatedMeshes) {
+          m.scale.set(hlScale, hlScale, 1);
+        }
+      }
+
       // Update Tip 3D Marker & Expanding Pulse Rings
       const tip = eng.tip;
       tipGroup.position.set(tip.x, 0, tip.z);
@@ -675,16 +751,18 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
       tipPulseMat1.color.setHex(tipColorHex);
       tipPulseMat2.color.setHex(tipColorHex);
 
-      const pulsePhase1 = (now * 0.0012) % 1;
-      const pulsePhase2 = ((now * 0.0012) + 0.5) % 1;
+      const pulseSpeed = 0.00042;
+      const pulsePhase1 = (now * pulseSpeed) % 1;
+      const pulsePhase2 = ((now * pulseSpeed) + 0.5) % 1;
 
       // In repel mode, waves expand outward; in attract mode, waves contract inward!
-      const s1 = tip.mode === 'repel' ? 1 + pulsePhase1 * 7.5 : 1 + (1 - pulsePhase1) * 7.5;
-      const s2 = tip.mode === 'repel' ? 1 + pulsePhase2 * 7.5 : 1 + (1 - pulsePhase2) * 7.5;
-      tipPulseMesh1.scale.set(s1, s1, 1);
-      tipPulseMat1.opacity = (1 - pulsePhase1) * 0.65;
-      tipPulseMesh2.scale.set(s2, s2, 1);
-      tipPulseMat2.opacity = (1 - pulsePhase2) * 0.65;
+      // Because tipPulseGeo vertices were rotated into the XZ plane, scale X and Z equally for a true circle.
+      const s1 = tip.mode === 'repel' ? 1 + pulsePhase1 * 6.0 : 1 + (1 - pulsePhase1) * 6.0;
+      const s2 = tip.mode === 'repel' ? 1 + pulsePhase2 * 6.0 : 1 + (1 - pulsePhase2) * 6.0;
+      tipPulseMesh1.scale.set(s1, 1, s1);
+      tipPulseMat1.opacity = (1 - pulsePhase1) * 0.55;
+      tipPulseMesh2.scale.set(s2, 1, s2);
+      tipPulseMat2.opacity = (1 - pulsePhase2) * 0.55;
 
       // Update Crowd Agent Instances
       for (let i = 0; i < maxAgents; i++) {
@@ -723,9 +801,9 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
 
         // Show floor crush shockwave ring if agent is in critical compression
         if (a.crushPressure > crushLimit) {
-          const ringScale = 1.0 + Math.sin(now * 0.02 + a.id) * 0.25;
+          const ringScale = 1.0 + Math.sin(now * 0.012 + a.id) * 0.2;
           ringDummy.position.set(a.x, 0.04, a.z);
-          ringDummy.scale.set(ringScale, ringScale, 1);
+          ringDummy.scale.set(ringScale, 1, ringScale);
           ringDummy.updateMatrix();
           crushRingsInstanced.setMatrixAt(i, ringDummy.matrix);
         } else {
@@ -763,15 +841,18 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
     const handleResize = () => {
       if (!container) return;
       const w = container.clientWidth || 800;
-      const h = container.clientHeight || 540;
+      const h = container.clientHeight || 480;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
     };
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
     window.addEventListener('resize', handleResize);
 
     return () => {
       cancelAnimationFrame(animId);
+      resizeObserver.disconnect();
       domElem.removeEventListener('mousedown', handlePointerDown);
       window.removeEventListener('mousemove', handlePointerMove);
       window.removeEventListener('mouseup', handlePointerUp);
@@ -788,67 +869,54 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
       {/* Main Three.js WebGL Viewport */}
       <div ref={mountRef} className="w-full h-full cursor-crosshair" />
 
-      {/* Top-Left HUD Overlay: Scenario & Click-to-Place Tip Instruction */}
-      <div className="absolute top-3 left-3 flex flex-col gap-2 pointer-events-none">
-        <div className="flex items-center gap-2.5 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-3.5 py-2 rounded-lg shadow-lg">
+      {/* Top-Left HUD Overlay: Compact Scenario Indicator & Color Legend */}
+      <div className="absolute top-3 left-3 flex flex-col gap-1.5 pointer-events-none">
+        <div className="flex items-center gap-2 bg-slate-950/85 backdrop-blur-md border border-slate-800 px-3 py-1.5 rounded-lg text-xs text-slate-200">
           {currentTip.mode === 'repel' ? (
-            <span className="flex items-center justify-center w-7 h-7 rounded-md bg-red-500/20 text-red-400 border border-red-500/40">
-              <Flame className="w-4 h-4 animate-pulse" />
-            </span>
+            <Flame className="w-3.5 h-3.5 text-red-400 shrink-0" />
           ) : (
-            <span className="flex items-center justify-center w-7 h-7 rounded-md bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/40">
-              <Magnet className="w-4 h-4 animate-pulse" />
-            </span>
+            <Magnet className="w-3.5 h-3.5 text-fuchsia-400 shrink-0" />
           )}
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-slate-200 flex items-center gap-2">
-              {currentTip.mode === 'repel'
-                ? 'Mode 1: Crowd Runs AWAY From Tip (Hazard Egress)'
-                : 'Mode 2: Crowd Moves TOWARDS Tip (Focal Surge)'}
-            </div>
-            <div className="text-[11px] text-slate-400 flex items-center gap-2">
-              <Crosshair className="w-3 h-3 text-sky-400" />
-              <span>
-                Click anywhere on the 3D arena floor to relocate the{' '}
-                <strong className="text-slate-200">
-                  {currentTip.mode === 'repel' ? 'Hazard Repulsion Tip' : 'Attraction Surge Tip'}
-                </strong>{' '}
-                (Currently at X:{currentTip.x}m, Z:{currentTip.z}m)
-              </span>
-            </div>
-          </div>
+          <span className="font-medium">
+            {currentTip.mode === 'repel' ? 'Hazard Egress (Repel)' : 'Focal Surge (Attract)'}
+          </span>
+          <span className="text-slate-500">•</span>
+          <span className="font-mono text-[11px] text-slate-400 flex items-center gap-1">
+            <Crosshair className="w-3 h-3 text-sky-400" />
+            Tip ({currentTip.x}m, {currentTip.z}m)
+          </span>
         </div>
 
         {/* Color Legend */}
-        <div className="flex flex-wrap items-center gap-3 bg-slate-900/85 backdrop-blur-md border border-slate-800 px-3 py-1.5 rounded-lg text-[11px] text-slate-300">
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block" />
-            Calm Flow
+        <div className="flex flex-wrap items-center gap-2.5 bg-slate-950/80 backdrop-blur-md border border-slate-800/80 px-2.5 py-1 rounded-md text-[11px] text-slate-400">
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+            Calm
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block" />
-            Beacon-Guided
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-sky-400 inline-block" />
+            Guided
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
-            High Density
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
+            High Pressure
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping inline-block" />
-            <span className="text-red-300 font-medium">
-              Crush Quake (&gt;{crushThreshold.toFixed(1)} kN/m)
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+            <span className="text-red-300">
+              Crush Force (&gt;{crushThreshold.toFixed(1)} kN/m)
             </span>
           </span>
         </div>
       </div>
 
       {/* Top-Right Camera View Controls */}
-      <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 p-1 rounded-lg">
+      <div className="absolute top-3 right-3 flex items-center gap-1 bg-slate-950/85 backdrop-blur-md border border-slate-800 p-1 rounded-lg">
         <button
           onClick={() => onCameraPresetChange('isometric')}
-          className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition ${
+          className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition cursor-pointer ${
             cameraPreset === 'isometric'
-              ? 'bg-sky-500/25 text-sky-300 border border-sky-500/40'
+              ? 'bg-slate-800 text-white border border-slate-700'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
@@ -857,32 +925,32 @@ export const Venue3DViewport: React.FC<Venue3DViewportProps> = ({
         </button>
         <button
           onClick={() => onCameraPresetChange('topdown')}
-          className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition ${
+          className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition cursor-pointer ${
             cameraPreset === 'topdown'
-              ? 'bg-sky-500/25 text-sky-300 border border-sky-500/40'
+              ? 'bg-slate-800 text-white border border-slate-700'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
           <Camera className="w-3.5 h-3.5" />
-          Top-Down CCTV
+          Top-Down
         </button>
         <button
           onClick={() => onCameraPresetChange('angled')}
-          className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition ${
+          className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition cursor-pointer ${
             cameraPreset === 'angled'
-              ? 'bg-sky-500/25 text-sky-300 border border-sky-500/40'
+              ? 'bg-slate-800 text-white border border-slate-700'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          Stadium Angle
+          Stadium
         </button>
       </div>
 
       {/* Bottom-Left Live Cursor Coordinate Readout */}
-      <div className="absolute bottom-3 left-3 bg-slate-900/85 backdrop-blur border border-slate-800 px-2.5 py-1 rounded text-[11px] font-mono text-slate-400 pointer-events-none">
+      <div className="absolute bottom-3 left-3 bg-slate-950/80 backdrop-blur border border-slate-800/80 px-2.5 py-1 rounded text-[11px] font-mono text-slate-400 pointer-events-none">
         {hoverCoords
-          ? `CURSOR FLOOR COORDS: X=${hoverCoords.x.toFixed(1)}m, Z=${hoverCoords.z.toFixed(1)}m (Left-Click to Place Tip | Right-Drag to Orbit 3D)`
-          : 'Left-Click arena floor to place Tip | Right-Drag or Shift-Drag to orbit 3D camera'}
+          ? `X=${hoverCoords.x.toFixed(1)}m, Z=${hoverCoords.z.toFixed(1)}m • Click floor to move Tip`
+          : 'Click floor to place Tip • Right-drag to orbit'}
       </div>
     </div>
   );

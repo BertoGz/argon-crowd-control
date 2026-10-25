@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
-  AlertTriangle,
   Bot,
   Camera,
   CheckCircle2,
@@ -11,6 +10,7 @@ import {
   Flame,
   KeyRound,
   Layers,
+  Loader2,
   Magnet,
   Pause,
   Play,
@@ -60,6 +60,7 @@ export function App() {
     reachedTargetCount: 0,
     peakCrushPressure: 0,
     currentMaxPressure: 0,
+    peakLocalDensity: 0,
     crushPocketEvents: 0,
     criticalAgentCount: 0,
     avgPanic: 0.4,
@@ -98,6 +99,10 @@ export function App() {
   const [showZeroCheatModal, setShowZeroCheatModal] = useState<boolean>(false);
   const [allowSecondaryAttractors, setAllowSecondaryAttractors] = useState<boolean>(false);
   const allowSecondaryRef = useRef<boolean>(false);
+
+  // Right Inspector Tab & 3D Spatial Highlight State
+  const [activeRightTab, setActiveRightTab] = useState<'interventions' | 'cctv' | 'critique'>('interventions');
+  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
 
   // User-adjustable Pass/Fail Threshold Sliders
   const [maxCrushThreshold, setMaxCrushThreshold] = useState<number>(3.8);
@@ -357,32 +362,67 @@ export function App() {
   };
 
   const activeCritique = critiqueHistory[selectedCritiqueIndex] || null;
+  const totalInterventionsCount = currentPlan.barriers.length + currentPlan.beacons.length;
+
+  const selectedInterventionMeta = (() => {
+    if (!highlightedItemId) return null;
+    if (highlightedItemId === 'ALL') {
+      return {
+        label: `Highlighting all ${totalInterventionsCount} active 3D interventions`,
+        detail: `${currentPlan.barriers.length} barriers • ${currentPlan.beacons.length} optical beacons`,
+        coords: `Iteration #${loopIteration}`,
+      };
+    }
+    const bar = currentPlan.barriers.find((b) => b.id === highlightedItemId);
+    if (bar) {
+      return {
+        label: `[${bar.kind.replace('_', ' ').toUpperCase()}] ${bar.id}`,
+        detail: bar.reason || 'Physical crowd flow baffle',
+        coords: `(${bar.x1},${bar.z1}) → (${bar.x2},${bar.z2})`,
+      };
+    }
+    const beacon = currentPlan.beacons.find((b) => b.id === highlightedItemId);
+    if (beacon) {
+      return {
+        label: `[${beacon.kind === 'dispersion_attractor' ? 'SAT-POD' : 'BEACON'}] ${beacon.label}`,
+        detail: `Guides pedestrians within ${beacon.radius}m radius`,
+        coords: `@(${beacon.x},${beacon.z}) R=${beacon.radius}m`,
+      };
+    }
+    return null;
+  })();
 
   return (
-    <div className="min-h-screen bg-[#060911] text-slate-100 flex flex-col">
-      {/* Top Navigation & Scenario Bar */}
-      <header className="border-b border-slate-800/90 bg-slate-950/90 backdrop-blur-md px-5 py-3 flex flex-wrap items-center justify-between gap-3 z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-sky-500/20">
-            <Radio className="w-5 h-5 text-white" />
-        </div>
-        <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-base font-bold tracking-tight text-white">
-                ARGON CROWD CONTROL
-              </h1>
-              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30">
-                More Dimensions Track • Closed-Loop CCTV Architect
-              </span>
-            </div>
-            <p className="text-xs text-slate-400">
-              Render 3D Crowd Physics → Watch CCTV Frames (Zero Game-Data Cheat) → Critique → Mutate 3D World in a Loop
-            </p>
+    <div className="h-screen overflow-hidden bg-[#070a12] text-slate-100 flex flex-col">
+      {/* Compact Top Navigation Bar */}
+      <header className="shrink-0 border-b border-slate-800/90 bg-slate-950 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 z-20">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-md bg-sky-500/15 border border-sky-500/40 flex items-center justify-center">
+            <Radio className="w-4 h-4 text-sky-400" />
           </div>
+          <h1 className="text-sm font-semibold tracking-tight text-white">
+            Argon Crowd Control
+          </h1>
+          <span
+            className={`text-[11px] font-mono px-2 py-0.5 rounded border ${
+              activeCritique
+                ? activeCritique.scenarioSuccess
+                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                  : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                : 'bg-slate-900 text-slate-400 border-slate-800'
+            }`}
+          >
+            Iter #{loopIteration}{' '}
+            {activeCritique
+              ? activeCritique.scenarioSuccess
+                ? '• Passed'
+                : '• Mitigating'
+              : '• Baseline'}
+          </span>
         </div>
 
         {/* Two Core Demo Mode Switchers */}
-        <div className="flex items-center gap-2 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
+        <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
           {PRESET_SCENARIOS.map((preset) => {
             const isSelected = activePreset.id === preset.id;
             const isRepel = preset.mode === 'repel';
@@ -390,12 +430,10 @@ export function App() {
               <button
                 key={preset.id}
                 onClick={() => handleSelectPreset(preset)}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition ${
+                className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
                   isSelected
-                    ? isRepel
-                      ? 'bg-red-500/20 text-red-300 border border-red-500/40 shadow-sm'
-                      : 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/40 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-slate-800 text-white border border-slate-700'
+                    : 'text-slate-400 hover:text-slate-200 border border-transparent'
                 }`}
               >
                 {isRepel ? (
@@ -405,8 +443,8 @@ export function App() {
                 )}
                 <span>
                   {isRepel
-                    ? 'Demo 1: Run AWAY from Tip (Repel)'
-                    : 'Demo 2: Move TOWARDS Tip (Attract)'}
+                    ? 'Demo 1: Run Away (Repel)'
+                    : 'Demo 2: Move Towards (Attract)'}
                 </span>
               </button>
             );
@@ -414,40 +452,47 @@ export function App() {
         </div>
 
         {/* Right Action Controls: Closed-Loop Trigger + API Key */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <button
             onClick={
               isAutoLoopActive
                 ? () => setIsAutoLoopActive(false)
                 : handleStartAutonomousLoop
             }
-            className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition shadow-lg cursor-pointer ${
+            disabled={isAnalyzingCCTV && !isAutoLoopActive}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 ${
               isAutoLoopActive
-                ? 'bg-amber-500 text-slate-950 hover:bg-amber-400 shadow-amber-500/20'
-                : 'bg-gradient-to-r from-sky-500 to-indigo-600 text-white hover:from-sky-400 hover:to-indigo-500 shadow-sky-500/25'
+                ? 'bg-amber-500 text-slate-950 hover:bg-amber-400'
+                : 'bg-sky-500 text-slate-950 hover:bg-sky-400'
             }`}
           >
-            <Sparkles className="w-4 h-4" />
+            {isAutoLoopActive || isAnalyzingCCTV ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
             {isAutoLoopActive
-              ? `Stop Auto-Loop (Iter #${loopIteration})`
-              : 'Start Autonomous Argon Loop'}
+              ? `Stop Loop (Iter #${loopIteration})`
+              : isAnalyzingCCTV
+              ? `Analyzing Iter #${loopIteration}...`
+              : 'Run Argon Loop'}
           </button>
 
-        <button
+          <button
             onClick={() => setShowZeroCheatModal(true)}
-            className="px-3 py-2 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700/80 flex items-center gap-1.5 transition cursor-pointer"
+            className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 flex items-center gap-1.5 transition cursor-pointer"
             title="Inspect the exact CCTV images & zero-cheat prompt sent to Gemini 4 Argon"
           >
             <Code2 className="w-3.5 h-3.5 text-sky-400" />
             Zero-Cheat Proof
-        </button>
+          </button>
 
           <button
             onClick={() => setShowApiConfig(!showApiConfig)}
-            className={`p-2 rounded-lg border transition cursor-pointer ${
+            className={`p-1.5 rounded-lg border transition cursor-pointer ${
               apiKey
                 ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
-                : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
             }`}
             title="Configure Gemini 4 Argon API Key"
           >
@@ -458,21 +503,21 @@ export function App() {
 
       {/* Collapsible Gemini 4 Argon API Key & Model Bar */}
       {showApiConfig && (
-        <div className="bg-slate-900/95 border-b border-slate-800 px-5 py-2.5 flex flex-wrap items-center justify-between gap-4 text-xs">
+        <div className="shrink-0 bg-slate-900 border-b border-slate-800 px-4 py-2 flex flex-wrap items-center justify-between gap-4 text-xs">
           <div className="flex items-center gap-3 flex-1 min-w-[280px]">
-            <span className="font-semibold text-slate-300">Gemini API Key:</span>
+            <span className="font-medium text-slate-300">Gemini API Key:</span>
             <input
               type="password"
               value={apiKey}
               onChange={(e) => saveApiKey(e.target.value)}
               placeholder="Paste GEMINI_API_KEY for live @google/genai multimodal calls..."
-              className="flex-1 max-w-md bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-slate-200 focus:outline-none focus:border-sky-500"
+              className="flex-1 max-w-md bg-slate-950 border border-slate-700 rounded-md px-3 py-1 text-slate-200 focus:outline-none focus:border-sky-500"
             />
             <span className="text-slate-400">Model:</span>
             <select
               value={modelId}
               onChange={(e) => setModelId(e.target.value)}
-              className="bg-slate-950 border border-slate-700 rounded-md px-2.5 py-1.5 text-slate-200"
+              className="bg-slate-950 border border-slate-700 rounded-md px-2.5 py-1 text-slate-200"
             >
               <option value="gemini-4-argon">gemini-4-argon (Primary)</option>
               <option value="gemini-2.5-pro">gemini-2.5-pro</option>
@@ -481,18 +526,77 @@ export function App() {
           </div>
           <div className="text-slate-400">
             {apiKey
-              ? 'Live @google/genai multimodal vision enabled (sends 4 CCTV PNG frames per iteration).'
-              : 'No key entered yet — using built-in Optical CCTV Frame Analyzer fallback so live demos never break.'}
+              ? 'Live @google/genai multimodal vision enabled (4 CCTV PNG frames/iter).'
+              : 'Using built-in Optical CCTV Frame Analyzer fallback.'}
           </div>
         </div>
       )}
 
-      {/* Main Workspace Grid */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 max-w-[1800px] w-full mx-auto">
-        {/* LEFT / CENTER COLUMN (7 cols): 3D Venue + Physical Controls */}
-        <div className="lg:col-span-7 flex flex-col gap-3">
+      {/* Persistent Offscreen/Dock Canvas Holder so CCTV rendering always stays active */}
+      <div className={activeRightTab === 'cctv' ? 'hidden' : 'sr-only pointer-events-none'}>
+        {/* When CCTV tab is not active, we still keep the canvas mounted via a portal/shared ref */}
+      </div>
+
+      {/* Main Two-Column Workspace (Locked to viewport height, no page scroll) */}
+      <main className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3 p-3 max-w-[1800px] w-full mx-auto overflow-hidden">
+        {/* LEFT COLUMN (7 cols): Dominant 3D Arena Stage + Compact Transport Footer */}
+        <div className="lg:col-span-7 flex flex-col min-h-0 h-full bg-slate-950 border border-slate-800/90 rounded-xl overflow-hidden">
+          {/* Stage Telemetry Strip */}
+          <div className="shrink-0 px-3.5 py-2 bg-slate-900/90 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-4 font-mono">
+              <span className="flex items-center gap-1.5">
+                <span className="text-slate-400">Physics Crush Force:</span>
+                <strong
+                  className={
+                    metrics.peakCrushPressure > maxCrushThreshold
+                      ? 'text-red-400'
+                      : 'text-emerald-400'
+                  }
+                >
+                  {metrics.peakCrushPressure.toFixed(2)} kN/m
+                </strong>
+                <span className="text-[10px] text-slate-500">
+                  (limit {maxCrushThreshold.toFixed(1)} kN/m)
+                </span>
+              </span>
+
+              <span className="text-slate-700">|</span>
+
+              <span className="flex items-center gap-1.5">
+                <span className="text-slate-400">Density:</span>
+                <strong className="text-slate-200">
+                  {metrics.peakLocalDensity.toFixed(1)} p/m²
+                </strong>
+              </span>
+
+              <span className="text-slate-700">|</span>
+
+              <span>
+                <span className="text-slate-400">
+                  {activeTip.mode === 'repel' ? 'Evacuated: ' : 'Reached Tip: '}
+                </span>
+                <strong className="text-slate-200">
+                  {activeTip.mode === 'repel'
+                    ? `${metrics.evacuatedCount}/${metrics.totalAgents}`
+                    : `${metrics.reachedTargetCount}/${metrics.totalAgents}`}
+                </strong>
+              </span>
+
+              <span className="text-slate-700">|</span>
+
+              <span>
+                <span className="text-slate-400">Flow: </span>
+                <strong className="text-sky-400">{metrics.flowEfficiency}%</strong>
+              </span>
+            </div>
+
+            <div className="text-[11px] font-mono text-slate-400">
+              T+{metrics.elapsedSeconds.toFixed(1)}s • {capturedFrames.length}/4 CCTV frames
+            </div>
+          </div>
+
           {/* 3D Viewport Container */}
-          <div className="h-[490px] w-full relative">
+          <div className="flex-1 min-h-0 w-full relative">
             <Venue3DViewport
               engineRef={engineRef}
               activeTip={activeTip}
@@ -505,42 +609,56 @@ export function App() {
               onMetricsUpdate={setMetrics}
               onCCTVFrameTick={handleCCTVFrameTick}
               cctvPreviewCanvasRef={cctvPreviewCanvasRef}
+              highlightedItemId={highlightedItemId}
             />
+
+            {/* Floating Spatial Callout when an Intervention is Highlighted */}
+            {selectedInterventionMeta && (
+              <div className="absolute bottom-11 left-3 right-3 bg-slate-950/90 backdrop-blur-md border border-amber-400/50 rounded-lg px-3.5 py-2 flex items-center justify-between gap-3 z-10">
+                <div className="text-xs truncate">
+                  <span className="font-mono font-semibold text-amber-300 mr-2">
+                    {selectedInterventionMeta.label}
+                  </span>
+                  <span className="text-slate-300">
+                    {selectedInterventionMeta.detail}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="font-mono text-[11px] text-sky-300">
+                    {selectedInterventionMeta.coords}
+                  </span>
+                  <button
+                    onClick={() => setHighlightedItemId(null)}
+                    className="text-[11px] text-slate-400 hover:text-white px-1.5 py-0.5 rounded bg-slate-800 cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Banner overlay when Argon is analyzing the CCTV frames */}
             {isAnalyzingCCTV && (
-              <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-10">
-                <div className="bg-slate-900 border border-sky-500/50 rounded-2xl p-6 max-w-md text-center shadow-2xl">
-                  <div className="w-12 h-12 rounded-full bg-sky-500/20 border border-sky-500/40 flex items-center justify-center mx-auto mb-3 animate-pulse">
-                    <Bot className="w-6 h-6 text-sky-400" />
-                  </div>
-                  <h3 className="text-sm font-bold text-white mb-1">
+              <div className="absolute inset-0 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center z-10">
+                <div className="bg-slate-900 border border-slate-700/90 rounded-xl px-6 py-5 max-w-sm text-center flex flex-col items-center">
+                  <Loader2 className="w-7 h-7 text-sky-400 animate-spin mb-3" />
+                  <h3 className="text-sm font-semibold text-white mb-1">
                     Gemini 4 Argon Watching CCTV Sequence (Iteration #{loopIteration})
                   </h3>
-                  <p className="text-xs text-slate-300 mb-3">
-                    Inspecting 4 optical CCTV frames (T+1.5s → T+7.5s) for compressive crowd arches, panic herding, and crush pockets...
+                  <p className="text-xs text-slate-400">
+                    Analyzing crowd flow and computing 3D spatial interventions...
                   </p>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {capturedFrames.map((f) => (
-                      <img
-                        key={f.frameIndex}
-                        src={f.dataUrl}
-                        alt={f.cameraLabel}
-                        className="w-full h-14 object-cover rounded border border-sky-500/40"
-                      />
-                    ))}
-                  </div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Simulation Transport & Manual Intervention Controls */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
+          {/* Slim Transport & Perimeter Gates Bar */}
+          <div className="shrink-0 bg-slate-900 border-t border-slate-800 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={() => setIsRunning(!isRunning)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold flex items-center gap-1.5 text-white transition cursor-pointer"
+                className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-xs font-medium flex items-center gap-1.5 text-white transition cursor-pointer"
               >
                 {isRunning ? (
                   <>
@@ -567,33 +685,36 @@ export function App() {
                   setMetrics(engineRef.current.getMetrics());
                   setIsRunning(true);
                 }}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium flex items-center gap-1.5 text-slate-200 transition cursor-pointer"
+                className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-xs font-medium flex items-center gap-1 text-slate-300 transition cursor-pointer"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Replay Current Layout
+                <RefreshCw className="w-3 h-3" />
+                Replay
               </button>
 
               <button
-                onClick={handleClearInterventions}
-                className="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-red-950/60 hover:text-red-300 text-xs font-medium flex items-center gap-1.5 text-slate-400 transition cursor-pointer"
+                onClick={() => {
+                  setHighlightedItemId(null);
+                  handleClearInterventions();
+                }}
+                className="px-2.5 py-1 rounded-md bg-slate-800/70 hover:bg-red-950/50 hover:text-red-300 text-xs font-medium flex items-center gap-1 text-slate-400 transition cursor-pointer"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                Reset to Unmitigated Baseline
+                <Trash2 className="w-3 h-3" />
+                Reset Baseline
               </button>
             </div>
 
             {/* Gate Status Toggles */}
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[11px] text-slate-400 flex items-center gap-1 mr-1">
                 <DoorOpen className="w-3.5 h-3.5 text-slate-400" />
-                Perimeter Gates:
+                Gates:
               </span>
               {(
                 [
-                  { id: 'north_main', label: 'G1 North' },
-                  { id: 'south_aux', label: 'G2 South' },
-                  { id: 'west_emergency', label: 'G3 West' },
-                  { id: 'east_stage', label: 'G4 East' },
+                  { id: 'north_main', label: 'G1 N' },
+                  { id: 'south_aux', label: 'G2 S' },
+                  { id: 'west_emergency', label: 'G3 W' },
+                  { id: 'east_stage', label: 'G4 E' },
                 ] as const
               ).map((g) => {
                 const isOpen = currentPlan.openGates.includes(g.id);
@@ -601,20 +722,20 @@ export function App() {
                   <button
                     key={g.id}
                     onClick={() => handleToggleGate(g.id)}
-                    className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold border transition cursor-pointer ${
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono font-medium border transition cursor-pointer ${
                       isOpen
-                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
                         : 'bg-red-500/10 border-red-500/30 text-red-400'
                     }`}
                   >
-                    {g.label}: {isOpen ? 'OPEN' : 'LOCKED'}
+                    {g.label}: {isOpen ? 'OPEN' : 'SHUT'}
                   </button>
                 );
               })}
             </div>
 
-            {/* Speed Selector & Secondary Attractor Toggle */}
-            <div className="flex items-center gap-2 text-xs flex-wrap">
+            {/* Speed Selector */}
+            <div className="flex items-center gap-1 text-xs">
               {activeTip.mode === 'attract' && (
                 <button
                   onClick={() => {
@@ -629,26 +750,23 @@ export function App() {
                       engineRef.current.applyInterventionPlan(filteredPlan);
                     }
                   }}
-                  className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold border transition cursor-pointer ${
+                  className={`px-2 py-0.5 mr-1 rounded text-[11px] font-mono border transition cursor-pointer ${
                     allowSecondaryAttractors
-                      ? 'bg-fuchsia-500/20 border-fuchsia-500/40 text-fuchsia-300'
-                      : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-600'
+                      ? 'bg-fuchsia-500/15 border-fuchsia-500/40 text-fuchsia-300'
+                      : 'bg-slate-800 border-slate-700 text-slate-400'
                   }`}
-                  title="When OFF, 100% of the crowd moves toward your single Tip and Argon only uses physical wave-breaker barriers & chicanes."
                 >
-                  Satellite Decoy Tips: {allowSecondaryAttractors ? 'ON (Split Crowd)' : 'OFF (Single Tip Only)'}
+                  Decoys: {allowSecondaryAttractors ? 'ON' : 'OFF'}
                 </button>
               )}
-
-              <span className="text-slate-400">Sim Speed:</span>
               {[1, 1.5, 2].map((spd) => (
                 <button
                   key={spd}
                   onClick={() => setSimSpeed(spd)}
-                  className={`px-2 py-0.5 rounded font-mono text-[11px] ${
+                  className={`px-2 py-0.5 rounded font-mono text-[11px] cursor-pointer ${
                     simSpeed === spd
-                      ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
-                      : 'bg-slate-800 text-slate-400'
+                      ? 'bg-slate-800 text-sky-300 border border-slate-700'
+                      : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
                   {spd}x
@@ -656,207 +774,341 @@ export function App() {
               ))}
             </div>
           </div>
-
-          {/* Active Physical Interventions Summary Strip */}
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-3.5 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-                <Layers className="w-4 h-4 text-sky-400" />
-                <span>
-                  Active 3D Physical Interventions in Arena (Iteration #{loopIteration})
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-400 font-mono">
-                {currentPlan.barriers.length} 3D Barriers • {currentPlan.beacons.length} Optical Beacons • {currentPlan.openGates.length}/4 Gates Open
-              </div>
-            </div>
-
-            {currentPlan.barriers.length === 0 && currentPlan.beacons.length === 0 ? (
-              <div className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 flex items-center justify-between">
-                <span>
-                  Unmitigated Baseline: No wave-breaker barriers or directional signage beacons deployed yet.
-                </span>
-                <button
-                  onClick={handleStartAutonomousLoop}
-                  className="text-xs font-bold text-amber-300 underline hover:text-white cursor-pointer"
-                >
-                  Let Argon Watch CCTV & Fix Flow →
-                </button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {currentPlan.barriers.map((bar) => (
-                  <div
-                    key={bar.id}
-                    className="bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-1.5 text-[11px] flex items-center justify-between"
-                  >
-                    <div>
-                      <span className="font-mono text-amber-400 font-semibold uppercase mr-1.5">
-                        [{bar.kind.replace('_', ' ')}]
-                      </span>
-                      <span className="text-slate-300">{bar.reason || bar.id}</span>
-                    </div>
-                    <span className="font-mono text-slate-500 ml-2 shrink-0">
-                      ({bar.x1},{bar.z1})→({bar.x2},{bar.z2})
-                    </span>
-                  </div>
-                ))}
-                {currentPlan.beacons.map((b) => (
-                  <div
-                    key={b.id}
-                    className="bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-1.5 text-[11px] flex items-center justify-between"
-                  >
-                    <div>
-                      <span className="font-mono text-sky-400 font-semibold uppercase mr-1.5">
-                        [{b.kind === 'dispersion_attractor' ? 'SAT-POD' : 'SIGNAGE'}]
-                      </span>
-                      <span className="text-slate-300">{b.label}</span>
-                    </div>
-                    <span className="font-mono text-slate-500 ml-2 shrink-0">
-                      @({b.x},{b.z}) R={b.radius}m
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
 
-        {/* RIGHT COLUMN (5 cols): Live CCTV Optical Feed + Argon Verification Loop */}
-        <div className="lg:col-span-5 flex flex-col gap-3">
-          {/* Card 1: Live CCTV Camera Feed (What Argon Actually Sees) */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex flex-col gap-2.5">
+        {/* RIGHT COLUMN (5 cols): Unified 3-Tab Inspector Dock (Scrolls internally per tab) */}
+        <div className="lg:col-span-5 flex flex-col min-h-0 h-full bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden">
+          {/* Tab Header Strip */}
+          <div className="shrink-0 grid grid-cols-3 bg-slate-950 border-b border-slate-800">
+            <button
+              onClick={() => setActiveRightTab('interventions')}
+              className={`py-3 px-3 text-xs font-medium flex items-center justify-center gap-2 border-b-2 transition cursor-pointer ${
+                activeRightTab === 'interventions'
+                  ? 'border-sky-400 text-white bg-slate-900/90'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5 text-sky-400" />
+              <span>3D Interventions</span>
+              <span className="px-1.5 py-0.2 rounded bg-slate-800 text-[11px] font-mono text-slate-300">
+                {totalInterventionsCount}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveRightTab('cctv')}
+              className={`py-3 px-3 text-xs font-medium flex items-center justify-center gap-2 border-b-2 transition cursor-pointer ${
+                activeRightTab === 'cctv'
+                  ? 'border-sky-400 text-white bg-slate-900/90'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Video className="w-3.5 h-3.5 text-red-400" />
+              <span>Live CCTV Feed</span>
+              <span className="px-1.5 py-0.2 rounded bg-slate-800 text-[11px] font-mono text-slate-300">
+                {capturedFrames.length}/4
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveRightTab('critique')}
+              className={`py-3 px-3 text-xs font-medium flex items-center justify-center gap-2 border-b-2 transition cursor-pointer ${
+                activeRightTab === 'critique'
+                  ? 'border-sky-400 text-white bg-slate-900/90'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Argon Critique</span>
+              {critiqueHistory.length > 0 && (
+                <span
+                  className={`px-1.5 py-0.2 rounded text-[11px] font-mono ${
+                    activeCritique?.scenarioSuccess
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : 'bg-amber-500/20 text-amber-300'
+                  }`}
+                >
+                  #{activeCritique?.iteration}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* TAB 1: Active 3D Physical Interventions in Arena (with 3D Spatial Highlight) */}
+          {activeRightTab === 'interventions' && (
+            <div className="p-4 flex-1 min-h-0 overflow-y-auto flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-xs font-semibold text-white">
+                    Active 3D Physical Interventions (Iteration #{loopIteration})
+                  </h2>
+                  <p className="text-[11px] text-slate-400">
+                    Hover or click any barrier or beacon below to spotlight its exact location in the 3D arena.
+                  </p>
+                </div>
+
+                {totalInterventionsCount > 0 && (
+                  <button
+                    onClick={() =>
+                      setHighlightedItemId(
+                        highlightedItemId === 'ALL' ? null : 'ALL'
+                      )
+                    }
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium border transition shrink-0 cursor-pointer ${
+                      highlightedItemId === 'ALL'
+                        ? 'bg-amber-500/20 border-amber-400/50 text-amber-200'
+                        : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    {highlightedItemId === 'ALL' ? 'Clear Spotlight' : 'Highlight All in 3D'}
+                  </button>
+                )}
+              </div>
+
+              {totalInterventionsCount === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
+                  <Layers className="w-7 h-7 text-slate-500 mb-2" />
+                  <div className="text-xs font-semibold text-slate-200 mb-1">
+                    Unmitigated Baseline (0 Interventions Deployed)
+                  </div>
+                  <p className="text-xs text-slate-400 max-w-xs mb-4">
+                    No wave-breaker barriers or optical signage beacons are placed in the arena yet. Run the autonomous Argon loop so Gemini can watch the CCTV feed and deploy 3D structures.
+                  </p>
+                  <button
+                    onClick={handleStartAutonomousLoop}
+                    disabled={isAutoLoopActive || isAnalyzingCCTV}
+                    className={`px-3.5 py-2 rounded-lg font-semibold text-xs flex items-center gap-2 transition ${
+                      isAutoLoopActive || isAnalyzingCCTV
+                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 cursor-not-allowed'
+                        : 'bg-sky-500 hover:bg-sky-400 text-slate-950 cursor-pointer'
+                    }`}
+                  >
+                    {isAutoLoopActive || isAnalyzingCCTV ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        {isAnalyzingCCTV
+                          ? `Argon Analyzing CCTV (Iter #${loopIteration})...`
+                          : `Capturing CCTV Sequence (${capturedFrames.length}/4)...`}
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        Let Argon Watch CCTV & Deploy 3D Fixes
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="shrink-0 flex flex-col divide-y divide-slate-800/80 border border-slate-800 rounded-xl overflow-hidden bg-slate-950/60">
+                  {currentPlan.barriers.map((bar) => {
+                    const isSelected =
+                      highlightedItemId === bar.id || highlightedItemId === 'ALL';
+                    return (
+                      <button
+                        key={bar.id}
+                        type="button"
+                        onMouseEnter={() => setHighlightedItemId(bar.id)}
+                        onClick={() =>
+                          setHighlightedItemId(
+                            highlightedItemId === bar.id ? null : bar.id
+                          )
+                        }
+                        className={`w-full text-left px-3.5 py-2.5 flex items-start justify-between gap-3 transition cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-500/10'
+                            : 'hover:bg-slate-900/90'
+                        }`}
+                      >
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                              {bar.kind.replace('_', ' ')}
+                            </span>
+                            <span className="text-xs font-medium text-slate-100">
+                              {bar.id}
+                            </span>
+                            {isSelected && (
+                              <span className="text-[10px] font-mono text-amber-300">
+                                ● Spotlighted in 3D
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 leading-snug">
+                            {bar.reason || 'Diverts high-pressure crowd stream'}
+                          </p>
+                        </div>
+                        <span className="font-mono text-[11px] text-slate-400 shrink-0">
+                          ({bar.x1},{bar.z1})→({bar.x2},{bar.z2})
+                        </span>
+                      </button>
+                    );
+                  })}
+
+                  {currentPlan.beacons.map((b) => {
+                    const isSelected =
+                      highlightedItemId === b.id || highlightedItemId === 'ALL';
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onMouseEnter={() => setHighlightedItemId(b.id)}
+                        onClick={() =>
+                          setHighlightedItemId(
+                            highlightedItemId === b.id ? null : b.id
+                          )
+                        }
+                        className={`w-full text-left px-3.5 py-2.5 flex items-start justify-between gap-3 transition cursor-pointer ${
+                          isSelected
+                            ? 'bg-sky-500/10'
+                            : 'hover:bg-slate-900/90'
+                        }`}
+                      >
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                              {b.kind === 'dispersion_attractor'
+                                ? 'SAT-POD'
+                                : 'BEACON'}
+                            </span>
+                            <span className="text-xs font-medium text-slate-100">
+                              {b.label}
+                            </span>
+                            {isSelected && (
+                              <span className="text-[10px] font-mono text-sky-300">
+                                ● Spotlighted in 3D
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 leading-snug">
+                            Optical guidance radius {b.radius}m → target ({b.targetX},{b.targetZ})
+                          </p>
+                        </div>
+                        <span className="font-mono text-[11px] text-slate-400 shrink-0">
+                          @({b.x},{b.z}) R={b.radius}m
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Perimeter Gate Summary Footer inside Interventions Tab */}
+              <div className="mt-auto pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+                <span>Active Perimeter Gates:</span>
+                <span className="font-mono text-slate-300">
+                  {currentPlan.openGates.length}/4 Open ({currentPlan.openGates.map((g) => g.split('_')[0].toUpperCase()).join(', ')})
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: Live CCTV Optical Feed & Pass Criteria Sliders */}
+          <div
+            className={
+              activeRightTab === 'cctv'
+                ? 'p-4 flex-1 min-h-0 overflow-y-auto flex flex-col gap-3.5'
+                : 'hidden'
+            }
+          >
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
-                <Video className="w-4 h-4 text-red-400" />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                  Live CCTV Optical Feed (Argon Vision Input)
+              <div>
+                <h2 className="text-xs font-semibold text-white flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                  Monochrome Overhead CCTV (Zero-Cheat Input)
                 </h2>
+                <p className="text-[11px] text-slate-400">
+                  Uncolored overhead silhouette feed sent to Gemini 4 Argon at T+1.5s, 3.5s, 5.5s, and 7.5s.
+                </p>
               </div>
               <button
-                onClick={handleAnalyzeNow}
-                disabled={isAnalyzingCCTV}
-                className="px-2.5 py-1 rounded-md bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
+                onClick={() => {
+                  handleAnalyzeNow();
+                  setActiveRightTab('critique');
+                }}
+                disabled={isAnalyzingCCTV || isAutoLoopActive}
+                className="px-2.5 py-1.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-medium flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
               >
-                <Camera className="w-3 h-3" />
-                Critique CCTV Now
+                {isAnalyzingCCTV ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Analyzing...
+                  </>
+                ) : (
+                  <>
+                    <Camera className="w-3.5 h-3.5" />
+                    Critique Now
+                  </>
+                )}
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
-              {/* Live CCTV Canvas */}
-              <div className="sm:col-span-7 relative rounded-lg overflow-hidden border border-slate-700/80 bg-slate-950">
-                <canvas
-                  ref={cctvPreviewCanvasRef}
-                  width={360}
-                  height={250}
-                  className="w-full h-[185px] object-cover block"
-                />
-                <div className="cctv-scanlines absolute inset-0 pointer-events-none" />
+            {/* Live CCTV Canvas */}
+            <div className="shrink-0 relative rounded-lg overflow-hidden border border-slate-800 bg-[#090d14]">
+              <canvas
+                ref={cctvPreviewCanvasRef}
+                width={480}
+                height={330}
+                className="w-full aspect-[480/330] object-contain block"
+              />
+              <div className="cctv-scanlines absolute inset-0 pointer-events-none" />
+            </div>
+
+            {/* 4 Sequential Keyframe Slots */}
+            <div className="shrink-0">
+              <div className="text-[11px] font-mono text-slate-400 mb-1.5 flex items-center justify-between">
+                <span>Captured Keyframe Buffer (4 Frames):</span>
+                <span>{capturedFrames.length}/4 Snapped</span>
               </div>
-
-              {/* Real-Time Crowd Quake Telemetry & Captured Keyframes */}
-              <div className="sm:col-span-5 flex flex-col gap-2">
-                <div
-                  className={`p-2.5 rounded-lg border ${
-                    metrics.peakCrushPressure > maxCrushThreshold
-                      ? 'bg-red-950/40 border-red-500/50 text-red-200'
-                      : 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
-                  }`}
-                >
-                  <div className="text-[10px] font-mono uppercase opacity-80 flex items-center justify-between">
-                    <span>Peak Crush Force</span>
-                    {metrics.peakCrushPressure > maxCrushThreshold ? (
-                      <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-                    ) : (
-                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    )}
-                  </div>
-                  <div className="text-lg font-mono font-bold">
-                    {metrics.peakCrushPressure.toFixed(2)} kN/m
-                  </div>
-                  <div className="text-[10px] opacity-80">
-                    {metrics.peakCrushPressure > maxCrushThreshold
-                      ? `FAILING: Exceeds ${maxCrushThreshold.toFixed(1)} kN/m Limit`
-                      : `PASSING: Below ${maxCrushThreshold.toFixed(1)} kN/m Limit`}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-1.5 text-xs">
-                  <div className="bg-slate-950 border border-slate-800 rounded-lg p-2">
-                    <div className="text-[10px] text-slate-400">
-                      {activeTip.mode === 'repel'
-                        ? 'Evacuated'
-                        : 'Reached Surge Tip'}
+              <div className="grid grid-cols-4 gap-2">
+                {[0, 1, 2, 3].map((idx) => {
+                  const f = capturedFrames[idx];
+                  return f ? (
+                    <div
+                      key={idx}
+                      className="rounded border border-slate-700 bg-[#090d14] overflow-hidden"
+                    >
+                      <img
+                        src={f.dataUrl}
+                        alt={f.cameraLabel}
+                        className="w-full aspect-[480/330] object-contain block"
+                      />
+                      <div className="text-[9px] font-mono text-center py-0.5 text-slate-400">
+                        T+{CAPTURE_TIMESTAMPS[idx]}s
+                      </div>
                     </div>
-                    <div className="font-mono font-bold text-slate-100">
-                      {activeTip.mode === 'repel'
-                        ? `${metrics.evacuatedCount}/${metrics.totalAgents}`
-                        : `${metrics.reachedTargetCount}/${metrics.totalAgents}`}
+                  ) : (
+                    <div
+                      key={idx}
+                      className="aspect-[480/330] rounded border border-dashed border-slate-800 bg-slate-950/50 flex items-center justify-center text-[10px] font-mono text-slate-500"
+                    >
+                      T+{CAPTURE_TIMESTAMPS[idx]}s
                     </div>
-                  </div>
-                  <div className="bg-slate-950 border border-slate-800 rounded-lg p-2">
-                    <div className="text-[10px] text-slate-400">Flow Score</div>
-                    <div className="font-mono font-bold text-sky-400">
-                      {metrics.flowEfficiency}%
-                    </div>
-                  </div>
-                </div>
-
-                {/* 4 Sequential Keyframe Slots */}
-                <div>
-                  <div className="text-[10px] font-mono text-slate-400 mb-1 flex items-center justify-between">
-                    <span>CCTV Clip Buffer (4 Frames):</span>
-                    <span>{capturedFrames.length}/4 Snapped</span>
-                  </div>
-                  <div className="grid grid-cols-4 gap-1">
-                    {[0, 1, 2, 3].map((idx) => {
-                      const f = capturedFrames[idx];
-                      return f ? (
-                        <img
-                          key={idx}
-                          src={f.dataUrl}
-                          alt={f.cameraLabel}
-                          className="w-full h-9 object-cover rounded border border-sky-500/50"
-                          title={f.cameraLabel}
-                        />
-                      ) : (
-                        <div
-                          key={idx}
-                          className="w-full h-9 rounded border border-dashed border-slate-700 bg-slate-950/60 flex items-center justify-center text-[9px] font-mono text-slate-500"
-                        >
-                          T+{CAPTURE_TIMESTAMPS[idx]}s
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                  );
+                })}
               </div>
             </div>
 
             {/* Pass / Fail Threshold Sliders */}
-            <div className="bg-slate-950/90 border border-slate-800/90 rounded-lg p-2.5 flex flex-col gap-2">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+            <div className="shrink-0 mt-auto pt-3 border-t border-slate-800 flex flex-col gap-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-slate-200 flex items-center gap-1.5">
                   <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
-                  Test Pass Criteria Sliders (Live CCTV & Argon Thresholds)
+                  Verification Pass Thresholds
                 </span>
-                <span className="font-mono text-[10px] text-slate-400">
+                <span className="font-mono text-[11px] text-slate-400">
                   {maxCrushThreshold <= 2.8
                     ? 'Strict Safety Standard'
                     : maxCrushThreshold >= 4.4
                     ? 'Lenient Standard'
-                    : 'Standard OSHA/FEMA Limit'}
+                    : 'OSHA/FEMA Limit'}
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Slider 1: Max Allowable Crush Force */}
-                <div className="bg-slate-900/80 border border-slate-800 rounded px-2.5 py-1.5">
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <span className="text-slate-300">Max Crush Force to Pass:</span>
-                    <span className="font-mono font-bold text-red-300">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-slate-400">Max Crush Force:</span>
+                    <span className="font-mono font-semibold text-slate-200">
                       &le; {maxCrushThreshold.toFixed(1)} kN/m
                     </span>
                   </div>
@@ -866,21 +1118,15 @@ export function App() {
                     max={5.5}
                     step={0.1}
                     value={maxCrushThreshold}
-                    onChange={(e) => setMaxCrushThreshold( parseFloat(e.target.value) )}
+                    onChange={(e) => setMaxCrushThreshold(parseFloat(e.target.value))}
                     className="w-full accent-sky-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
                   />
-                  <div className="flex justify-between text-[9px] font-mono text-slate-500 mt-0.5">
-                    <span>2.0 kN/m (Strict)</span>
-                    <span>3.8 (Default)</span>
-                    <span>5.5 kN/m (Lenient)</span>
-                  </div>
                 </div>
 
-                {/* Slider 2: Min Argon Safety Score */}
-                <div className="bg-slate-900/80 border border-slate-800 rounded px-2.5 py-1.5">
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <span className="text-slate-300">Min Safety Score to Pass:</span>
-                    <span className="font-mono font-bold text-sky-300">
+                <div className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-slate-400">Min Score:</span>
+                    <span className="font-mono font-semibold text-slate-200">
                       &ge; {minSafetyScore}/100
                     </span>
                   </div>
@@ -890,193 +1136,180 @@ export function App() {
                     max={95}
                     step={5}
                     value={minSafetyScore}
-                    onChange={(e) => setMinSafetyScore( parseInt(e.target.value, 10) )}
+                    onChange={(e) => setMinSafetyScore(parseInt(e.target.value, 10))}
                     className="w-full accent-sky-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
                   />
-                  <div className="flex justify-between text-[9px] font-mono text-slate-500 mt-0.5">
-                    <span>50 (Easy Pass)</span>
-                    <span>80 (Default)</span>
-                    <span>95 (Zero-Crush)</span>
-                  </div>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Card 2: Gemini 4 Argon Closed-Loop Critique & Verification Log */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 flex-1 flex flex-col gap-3">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Bot className="w-4 h-4 text-sky-400" />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                  Gemini 4 Argon Visual Critique & Closed Loop
-                </h2>
-              </div>
+          {/* TAB 3: Gemini 4 Argon Visual Critique & Closed Loop */}
+          {activeRightTab === 'critique' && (
+            <div className="p-4 flex-1 min-h-0 overflow-y-auto flex flex-col gap-3">
               {critiqueHistory.length > 0 && (
-                <div className="flex items-center gap-1">
-                  {critiqueHistory.map((c, idx) => (
-                    <button
-                      key={c.iteration + '-' + idx}
-                      onClick={() => setSelectedCritiqueIndex(idx)}
-                      className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold transition cursor-pointer ${
-                        selectedCritiqueIndex === idx
-                          ? c.scenarioSuccess
-                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      Iter #{c.iteration} {c.scenarioSuccess ? '✓' : '↻'}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {!activeCritique ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-center py-8 px-4 border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
-                <Activity className="w-8 h-8 text-sky-400/70 mb-2" />
-                <h3 className="text-sm font-semibold text-slate-200 mb-1">
-                  Ready to Run the Visual Verification Loop
-                </h3>
-                <p className="text-xs text-slate-400 max-w-sm mb-4">
-                  1. Click anywhere on the 3D arena floor to place the{' '}
-                  <strong className="text-slate-200">
-                    {activeTip.mode === 'repel'
-                      ? 'Hazard Repulsion Tip'
-                      : 'Attraction Surge Tip'}
-                  </strong>
-                  .<br />
-                  2. Click <strong>Start Autonomous Argon Loop</strong>. Argon will watch the 4 CCTV frames, detect any crowd crush arch, place 3D barriers/beacons, and re-test until safe!
-                </p>
-                <button
-                  onClick={handleStartAutonomousLoop}
-                  className="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center gap-2 transition cursor-pointer"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  Launch Closed-Loop Verification
-                </button>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3 text-xs">
-                {/* Status Banner */}
-                <div
-                  className={`p-3 rounded-lg border flex items-center justify-between ${
-                    activeCritique.scenarioSuccess
-                      ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
-                      : 'bg-amber-500/10 border-amber-500/40 text-amber-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    {activeCritique.scenarioSuccess ? (
-                      <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                    ) : (
-                      <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0" />
-                    )}
-                    <div>
-                      <div className="font-bold text-sm">
-                        {activeCritique.scenarioSuccess
-                          ? `Iteration #${activeCritique.iteration} PASSED — Safe Flow Verified`
-                          : `Iteration #${activeCritique.iteration} FAILED — Crush Bottleneck Detected`}
-                      </div>
-                      <div className="text-[11px] opacity-80 font-mono">
-                        Model: {activeCritique.modelUsed} • Safety Score: {activeCritique.safetyScore}/100 • Peak Force: {activeCritique.metricsAtEvaluation.peakCrushPressure} kN/m
-                      </div>
-                      <div className="mt-1 flex items-center gap-1.5">
-                        <span
-                          className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase ${
-                            activeCritique.isLiveApiCall
-                              ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
-                              : 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
-                          }`}
-                        >
-                          {activeCritique.isLiveApiCall ? 'LIVE GEMINI API' : 'LOCAL OPTICAL FALLBACK'}
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-400 truncate max-w-[360px]" title={activeCritique.executionLog}>
-                          {activeCritique.executionLog}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {!activeCritique.scenarioSuccess && !isAutoLoopActive && (
-                    <button
-                      onClick={() =>
-                        handleApplyProposedPlan(
-                          activeCritique.proposedPlan,
-                          activeCritique.iteration + 1
-                        )
-                      }
-                      className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center gap-1 shrink-0 cursor-pointer"
-                    >
-                      Apply Fix & Test Iter #{activeCritique.iteration + 1}
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                {/* What Argon Saw in the CCTV Frames */}
-                <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3 space-y-2">
-                  <div>
-                    <div className="text-[10px] font-mono uppercase text-sky-400 font-semibold">
-                      1. Optical CCTV Observation (From 4 Sequential Frames)
-                    </div>
-                    <p className="text-slate-200 mt-0.5 leading-relaxed">
-                      {activeCritique.observedCrowdBehavior}
-                    </p>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] font-mono uppercase text-red-400 font-semibold">
-                      2. Root-Cause Crowd Physics Diagnosis
-                    </div>
-                    <p className="text-slate-300 mt-0.5 leading-relaxed">
-                      {activeCritique.rootCauseDiagnosis}
-                    </p>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] font-mono uppercase text-emerald-400 font-semibold">
-                      3. Argon Spatial Intervention Plan
-                    </div>
-                    <p className="text-slate-300 mt-0.5 leading-relaxed">
-                      {activeCritique.interventionReasoning}
-                    </p>
-                  </div>
-                </div>
-
-                {/* CCTV Frames Inspected in This Iteration */}
-                <div>
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1.5">
-                    <span>CCTV Frames Sent to Gemini 4 Argon (Iter #{activeCritique.iteration}):</span>
-                    <button
-                      onClick={() => setShowZeroCheatModal(true)}
-                      className="text-sky-400 hover:underline font-mono cursor-pointer"
-                    >
-                      View Raw Prompt & Payload →
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-4 gap-2">
-                    {activeCritique.cctvFramesSent.map((frame) => (
-                      <div
-                        key={frame.frameIndex}
-                        className="bg-slate-950 border border-slate-800 rounded overflow-hidden"
+                <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                  <span className="text-xs text-slate-400">Iteration History:</span>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {critiqueHistory.map((c, idx) => (
+                      <button
+                        key={c.iteration + '-' + idx}
+                        onClick={() => setSelectedCritiqueIndex(idx)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono font-medium transition cursor-pointer ${
+                          selectedCritiqueIndex === idx
+                            ? c.scenarioSuccess
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                            : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
                       >
-                        <img
-                          src={frame.dataUrl}
-                          alt={frame.cameraLabel}
-                          className="w-full h-16 object-cover"
-                        />
-                        <div className="text-[9px] font-mono text-center py-0.5 text-slate-400">
-                          {frame.cameraLabel}
-                        </div>
-                      </div>
+                        Iter #{c.iteration} {c.scenarioSuccess ? '✓' : '↻'}
+                      </button>
                     ))}
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+
+              {!activeCritique ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
+                  <Activity className="w-7 h-7 text-sky-400/70 mb-2" />
+                  <h3 className="text-xs font-semibold text-slate-200 mb-1">
+                    No Visual Critique Recorded Yet
+                  </h3>
+                  <p className="text-xs text-slate-400 max-w-xs mb-4">
+                    Start the autonomous Argon loop or click Critique Now to evaluate the 4 monochrome CCTV frames.
+                  </p>
+                  <button
+                    onClick={handleStartAutonomousLoop}
+                    disabled={isAutoLoopActive || isAnalyzingCCTV}
+                    className={`px-3.5 py-2 rounded-lg font-semibold text-xs flex items-center gap-2 transition ${
+                      isAutoLoopActive || isAnalyzingCCTV
+                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 cursor-not-allowed'
+                        : 'bg-sky-500 hover:bg-sky-400 text-slate-950 cursor-pointer'
+                    }`}
+                  >
+                    {isAutoLoopActive || isAnalyzingCCTV ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        {isAnalyzingCCTV
+                          ? `Argon Analyzing CCTV (Iter #${loopIteration})...`
+                          : `Capturing CCTV Sequence (${capturedFrames.length}/4)...`}
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        Run Closed-Loop Verification
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3 text-xs">
+                  {/* Status Banner */}
+                  <div
+                    className={`p-3 rounded-lg border flex items-center justify-between gap-2 ${
+                      activeCritique.scenarioSuccess
+                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
+                        : 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      {activeCritique.scenarioSuccess ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      ) : (
+                        <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+                      )}
+                      <div>
+                        <div className="font-semibold text-xs">
+                          {activeCritique.scenarioSuccess
+                            ? `Iteration #${activeCritique.iteration} PASSED — Safe Flow Verified`
+                            : `Iteration #${activeCritique.iteration} FAILED — Crush Bottleneck Detected`}
+                        </div>
+                        <div className="text-[11px] opacity-80 font-mono">
+                          Score: {activeCritique.safetyScore}/100 • Inferred Force: {activeCritique.inferredCrushForceKnm} kN/m (CCTV Density: {activeCritique.opticalDensityPpm2} p/m²) • Physics Force: {activeCritique.groundTruthCrushForceKnm} kN/m
+                        </div>
+                      </div>
+                    </div>
+
+                    {!activeCritique.scenarioSuccess && !isAutoLoopActive && (
+                      <button
+                        onClick={() =>
+                          handleApplyProposedPlan(
+                            activeCritique.proposedPlan,
+                            activeCritique.iteration + 1
+                          )
+                        }
+                        className="px-2.5 py-1.5 rounded-md bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs flex items-center gap-1 shrink-0 cursor-pointer"
+                      >
+                        Apply Fix #{activeCritique.iteration + 1}
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Structured Critique Sections */}
+                  <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3 space-y-2.5">
+                    <div>
+                      <div className="text-[10px] font-mono uppercase text-sky-400 font-semibold">
+                        1. Optical CCTV Observation
+                      </div>
+                      <p className="text-slate-200 mt-0.5 leading-relaxed">
+                        {activeCritique.observedCrowdBehavior}
+                      </p>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800/80">
+                      <div className="text-[10px] font-mono uppercase text-red-400 font-semibold">
+                        2. Root-Cause Crowd Physics Diagnosis
+                      </div>
+                      <p className="text-slate-300 mt-0.5 leading-relaxed">
+                        {activeCritique.rootCauseDiagnosis}
+                      </p>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800/80">
+                      <div className="text-[10px] font-mono uppercase text-emerald-400 font-semibold">
+                        3. Argon Spatial Intervention Plan
+                      </div>
+                      <p className="text-slate-300 mt-0.5 leading-relaxed">
+                        {activeCritique.interventionReasoning}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* CCTV Frames Inspected in This Iteration */}
+                  <div className="mt-auto">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1.5">
+                      <span>Frames Inspected (Iter #{activeCritique.iteration}):</span>
+                      <button
+                        onClick={() => setShowZeroCheatModal(true)}
+                        className="text-sky-400 hover:underline font-mono cursor-pointer"
+                      >
+                        Inspect Raw Payload →
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {activeCritique.cctvFramesSent.map((frame) => (
+                        <div
+                          key={frame.frameIndex}
+                          className="bg-[#090d14] border border-slate-800 rounded overflow-hidden"
+                        >
+                          <img
+                            src={frame.dataUrl}
+                            alt={frame.cameraLabel}
+                            className="w-full aspect-[480/330] object-contain block"
+                          />
+                          <div className="text-[9px] font-mono text-center py-0.5 text-slate-400">
+                            {frame.cameraLabel}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </main>
 
