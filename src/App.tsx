@@ -78,6 +78,10 @@ export function App() {
   const [isAutoLoopActive, setIsAutoLoopActive] = useState<boolean>(false);
   const isAutoLoopActiveRef = useRef<boolean>(false);
 
+  // Single-step queued review state (waits for 4 CCTV frames after "Critique Now" or "Apply Fix")
+  const [isAwaiting4Frames, setIsAwaiting4Frames] = useState<boolean>(false);
+  const isAwaiting4FramesRef = useRef<boolean>(false);
+
   const [isAnalyzingCCTV, setIsAnalyzingCCTV] = useState<boolean>(false);
   const isAnalyzingRef = useRef<boolean>(false);
 
@@ -89,10 +93,11 @@ export function App() {
 
   useEffect(() => {
     isAutoLoopActiveRef.current = isAutoLoopActive;
+    isAwaiting4FramesRef.current = isAwaiting4Frames;
     isAnalyzingRef.current = isAnalyzingCCTV;
     loopIterationRef.current = loopIteration;
     capturedFramesRef.current = capturedFrames;
-  }, [isAutoLoopActive, isAnalyzingCCTV, loopIteration, capturedFrames]);
+  }, [isAutoLoopActive, isAwaiting4Frames, isAnalyzingCCTV, loopIteration, capturedFrames]);
 
   const [critiqueHistory, setCritiqueHistory] = useState<ArgonVisualCritique[]>([]);
   const [selectedCritiqueIndex, setSelectedCritiqueIndex] = useState<number>(0);
@@ -132,6 +137,8 @@ export function App() {
   // Switch between Demo 1 (Repel / Hazard) and Demo 2 (Attract / Surge)
   const handleSelectPreset = (preset: PresetScenario) => {
     setIsAutoLoopActive(false);
+    setIsAwaiting4Frames(false);
+    isAwaiting4FramesRef.current = false;
     setIsAnalyzingCCTV(false);
     setActivePreset(preset);
     setActiveTip({ ...preset.tip });
@@ -248,12 +255,17 @@ export function App() {
             capturedFramesRef.current = nextList;
             setCapturedFrames(nextList);
 
-            // Once all 4 sequential CCTV frames are captured in Autonomous Loop mode, trigger Argon!
+            // Once all 4 sequential CCTV frames are captured in Autonomous Loop mode OR single-step queued review, trigger Argon!
             if (
               nextList.length === CAPTURE_TIMESTAMPS.length &&
-              isAutoLoopActiveRef.current &&
+              (isAutoLoopActiveRef.current || isAwaiting4FramesRef.current) &&
               !isAnalyzingRef.current
             ) {
+              if (isAwaiting4FramesRef.current) {
+                setIsAwaiting4Frames(false);
+                isAwaiting4FramesRef.current = false;
+                setActiveRightTab('critique');
+              }
               triggerArgonVerification(
                 nextList,
                 loopIterationRef.current,
@@ -295,28 +307,29 @@ export function App() {
     setIsRunning(true);
   };
 
-  // Manually trigger Argon analysis right now on current frames
+  // Manually trigger Argon analysis: if 4 frames are already captured, critique immediately;
+  // otherwise queue review to fire automatically as soon as the 4th CCTV frame is snapped.
   const handleAnalyzeNow = () => {
-    let frames = [...capturedFramesRef.current];
-    if (frames.length === 0 && cctvPreviewCanvasRef.current) {
-      frames = [
-        {
-          frameIndex: 1,
-          timestampSimSec: engineRef.current.elapsedSeconds,
-          dataUrl: cctvPreviewCanvasRef.current.toDataURL('image/png'),
-          cameraLabel: `CAM-01 T+${engineRef.current.elapsedSeconds.toFixed(1)}s`,
-        },
-      ];
+    const frames = [...capturedFramesRef.current];
+    if (frames.length >= CAPTURE_TIMESTAMPS.length) {
+      setActiveRightTab('critique');
+      triggerArgonVerification(frames, loopIteration, currentPlan);
+    } else {
+      setIsAwaiting4Frames(true);
+      isAwaiting4FramesRef.current = true;
+      setIsRunning(true);
     }
-    triggerArgonVerification(frames, loopIteration, currentPlan);
   };
 
-  // Apply a proposed plan manually if user ran single-step
+  // Apply a proposed plan from "Apply Fix" and automatically review once the 4 new CCTV frames are captured
   const handleApplyProposedPlan = (plan: PhysicalInterventionPlan, nextIter: number) => {
     setCurrentPlan(plan);
     setLoopIteration(nextIter);
+    loopIterationRef.current = nextIter;
     setCapturedFrames([]);
     capturedFramesRef.current = [];
+    setIsAwaiting4Frames(true);
+    isAwaiting4FramesRef.current = true;
     engineRef.current.reset(
       activePreset.agentCount,
       engineRef.current.tip,
@@ -324,23 +337,6 @@ export function App() {
     );
     setMetrics(engineRef.current.getMetrics());
     setIsRunning(true);
-  };
-
-  // Manual Gate Toggle
-  const handleToggleGate = (
-    gateId: 'north_main' | 'south_aux' | 'east_stage' | 'west_emergency'
-  ) => {
-    const exists = currentPlan.openGates.includes(gateId);
-    const nextGates = exists
-      ? currentPlan.openGates.filter((id) => id !== gateId)
-      : [...currentPlan.openGates, gateId];
-    if (nextGates.length === 0) return; // keep at least 1 gate open
-    const updatedPlan: PhysicalInterventionPlan = {
-      ...currentPlan,
-      openGates: nextGates,
-    };
-    setCurrentPlan(updatedPlan);
-    engineRef.current.applyInterventionPlan(updatedPlan);
   };
 
   const handleClearInterventions = () => {
@@ -478,14 +474,14 @@ export function App() {
               : 'Run Argon Loop'}
           </button>
 
-          <button
+        <button
             onClick={() => setShowZeroCheatModal(true)}
             className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 flex items-center gap-1.5 transition cursor-pointer"
             title="Inspect the exact CCTV images & zero-cheat prompt sent to Gemini 4 Argon"
           >
             <Code2 className="w-3.5 h-3.5 text-sky-400" />
             Zero-Cheat Proof
-          </button>
+        </button>
 
           <button
             onClick={() => setShowApiConfig(!showApiConfig)}
@@ -703,10 +699,10 @@ export function App() {
               </button>
             </div>
 
-            {/* Gate Status Toggles */}
-            <div className="flex items-center gap-1 flex-wrap">
-              <span className="text-[11px] text-slate-400 flex items-center gap-1 mr-1">
-                <DoorOpen className="w-3.5 h-3.5 text-slate-400" />
+            {/* Read-Only Gate Status Telemetry */}
+            <div className="flex items-center gap-3 flex-wrap text-[11px] font-mono select-none">
+              <span className="text-slate-400 flex items-center gap-1">
+                <DoorOpen className="w-3.5 h-3.5 text-slate-500" />
                 Gates:
               </span>
               {(
@@ -719,17 +715,19 @@ export function App() {
               ).map((g) => {
                 const isOpen = currentPlan.openGates.includes(g.id);
                 return (
-                  <button
+                  <span
                     key={g.id}
-                    onClick={() => handleToggleGate(g.id)}
-                    className={`px-2 py-0.5 rounded text-[11px] font-mono font-medium border transition cursor-pointer ${
-                      isOpen
-                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
-                        : 'bg-red-500/10 border-red-500/30 text-red-400'
+                    className={`flex items-center gap-1 ${
+                      isOpen ? 'text-emerald-400' : 'text-slate-500'
                     }`}
                   >
-                    {g.label}: {isOpen ? 'OPEN' : 'SHUT'}
-                  </button>
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        isOpen ? 'bg-emerald-400' : 'bg-red-500/70'
+                      }`}
+                    />
+                    <span>{g.label}</span>
+                  </span>
                 );
               })}
             </div>
@@ -1021,17 +1019,19 @@ export function App() {
                 </p>
               </div>
               <button
-                onClick={() => {
-                  handleAnalyzeNow();
-                  setActiveRightTab('critique');
-                }}
-                disabled={isAnalyzingCCTV || isAutoLoopActive}
+                onClick={handleAnalyzeNow}
+                disabled={isAnalyzingCCTV || isAutoLoopActive || isAwaiting4Frames}
                 className="px-2.5 py-1.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-medium flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
               >
                 {isAnalyzingCCTV ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     Analyzing...
+                  </>
+                ) : isAwaiting4Frames ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Capturing ({capturedFrames.length}/4)...
                   </>
                 ) : (
                   <>
@@ -1239,10 +1239,26 @@ export function App() {
                             activeCritique.iteration + 1
                           )
                         }
-                        className="px-2.5 py-1.5 rounded-md bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs flex items-center gap-1 shrink-0 cursor-pointer"
+                        disabled={isAwaiting4Frames || isAnalyzingCCTV}
+                        className={`px-2.5 py-1.5 rounded-md font-semibold text-xs flex items-center gap-1.5 shrink-0 transition ${
+                          isAwaiting4Frames || isAnalyzingCCTV
+                            ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40 cursor-not-allowed'
+                            : 'bg-amber-400 hover:bg-amber-300 text-slate-950 cursor-pointer'
+                        }`}
                       >
-                        Apply Fix #{activeCritique.iteration + 1}
-                        <ChevronRight className="w-3.5 h-3.5" />
+                        {isAwaiting4Frames || isAnalyzingCCTV ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            {isAnalyzingCCTV
+                              ? `Reviewing Iter #${loopIteration}...`
+                              : `Capturing CCTV (${capturedFrames.length}/4)...`}
+                          </>
+                        ) : (
+                          <>
+                            Apply Fix & Review #{activeCritique.iteration + 1}
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </>
+                        )}
                       </button>
                     )}
                   </div>
